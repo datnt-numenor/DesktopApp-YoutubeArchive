@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="settings-grid">
+    <div>
+        <h1>Settings</h1>
+        <p class="text-muted">Scheduler and local archive preferences.</p>
+    </div>
+    <div class="panel">
+        <form id="syncScheduleForm" class="settings-form">
+            <label class="form-label" for="syncTime">Daily MP3 sync time</label>
+            <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required {{ 'disabled' if not scheduled_sync else '' }}>
+            {% if scheduled_sync %}
+            <div class="small text-muted mt-2">
+                Windows Task Scheduler: <strong>{{ scheduled_sync.state }}</strong>
+                {% if scheduled_sync.next_run_time %}| Next run: {{ scheduled_sync.next_run_time }}{% endif %}
+            </div>
+            {% else %}
+            <div class="download-error mt-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or 'Windows scheduled sync is not installed.' }}
+            </div>
+            {% endif %}
+            <button class="btn btn-danger mt-3" type="submit" {{ 'disabled' if not scheduled_sync else '' }}>
+                <i class="bi bi-save me-1"></i>Save
+            </button>
+        </form>
+    </div>
+</section>
+
+<section class="settings-summary mt-4">
+    <div class="panel">
+        <div class="panel-header compact">
+            <h2>Change password</h2>
+            <p>Confirm your current password before choosing a new one.</p>
+        </div>
+        <form id="changePasswordForm" class="settings-form">
+            <div class="mb-3">
+                <label class="form-label" for="currentPassword">Current password</label>
+                <input class="form-control" id="currentPassword" name="current_password" type="password" autocomplete="current-password" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="newPassword">New password</label>
+                <input class="form-control" id="newPassword" name="new_password" type="password" minlength="8" autocomplete="new-password" required>
+                <div class="form-text">Use at least 8 characters.</div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="confirmNewPassword">Confirm new password</label>
+                <input class="form-control" id="confirmNewPassword" type="password" minlength="8" autocomplete="new-password" required>
+            </div>
+            <button class="btn btn-danger" type="submit">
+                <i class="bi bi-key me-1"></i>Change password
+            </button>
+        </form>
+    </div>
+</section>
+
+<section class="settings-summary mt-4">
+    <div class="panel">
+        <div class="panel-header compact">
+            <h2>Local archive</h2>
+            <p>Local owner</p>
+        </div>
+        <div class="quota-grid">
+            <div class="quota-storage storage-{{ topbar_stats.storage_level }}">
+                <span class="metric-label">Storage</span>
+                <strong>{{ user.storage_used_bytes|bytes }}</strong>
+                <small>{{ storage_percent }}% of {{ user.storage_quota_bytes|bytes }}</small>
+                {% if topbar_stats.storage_level != 'normal' %}
+                <span class="quota-storage-note">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    {{ 'Đã đầy, tạm dừng tải mới' if topbar_stats.storage_level == 'full' else 'Dung lượng thư viện sắp đầy' }}
+                </span>
+                {% endif %}
+            </div>
+            <div>
+                <span class="metric-label">Playlist quota</span>
+                <strong>{{ playlist_quota }}</strong>
+                <small>maximum saved playlists</small>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="detail-bar">
+    <div>
+        <a class="back-link" href="/"><i class="bi bi-arrow-left"></i> Back</a>
+        <h1>{{ playlist.title }}</h1>
+        <p class="text-muted mb-0">
+            {{ playlist.videos|length }} {{ 'bài đã ẩn' if show_hidden else 'videos' }} |
+            Last sync: {{ playlist.last_synced.strftime('%Y-%m-%d %H:%M') if playlist.last_synced else 'Never' }}
+        </p>
+    </div>
+    <div class="detail-actions">
+        {% if show_hidden %}
+        <a class="btn btn-outline-secondary" href="/playlist/{{ playlist.id }}">
+            <i class="bi bi-arrow-left me-1"></i>Danh sách bài hát
+        </a>
+        {% elif playlist.hidden_count %}
+        <a class="btn btn-outline-secondary" href="/playlist/{{ playlist.id }}?hidden=1">
+            <i class="bi bi-eye-slash me-1"></i>Bài đã ẩn ({{ playlist.hidden_count }})
+        </a>
+        {% endif %}
+        {% if playlist.source_type == 'YOUTUBE' %}
+        <label class="auto-sync-toggle form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="Enable scheduled sync for this playlist">
+            <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
+            <span class="auto-sync-copy">
+                <i class="bi bi-arrow-repeat"></i>
+                <span class="js-auto-sync-label">{{ 'Auto-sync on' if playlist.auto_sync else 'Auto-sync off' }}</span>
+            </span>
+        </label>
+        <button class="btn btn-outline-danger js-sync" data-playlist-id="{{ playlist.id }}" data-format="mp3">
+            <i class="bi bi-music-note-beamed me-1"></i>Sync MP3
+        </button>
+        {% else %}
+        <span class="playlist-custom-label"><i class="bi bi-folder-music"></i> Playlist thủ công</span>
+        {% endif %}
+    </div>
+</div>
+
+{% if playlist.source_type == 'CUSTOM' and not show_hidden %}
+<section class="custom-sources-panel">
+    <div class="panel-header compact">
+        <h2>Thêm bài hát</h2>
+        <p>Chọn từ thư viện, nhập MP3 hoặc tải MP3 từ link YouTube.</p>
+    </div>
+    <div class="custom-source-grid">
+        <form id="addLibraryVideosForm" class="custom-source-card" data-playlist-id="{{ playlist.id }}">
+            <h3><i class="bi bi-collection-play"></i> Thư viện đã tải</h3>
+            <input class="form-control form-control-sm js-library-search" type="search" placeholder="Tìm bài đã tải">
+            <div class="custom-library-list">
+                {% for item in library_videos %}
+                <label class="custom-library-item" data-search="{{ (item.title ~ ' ' ~ item.channel_name)|lower }}">
+                    <input class="form-check-input" type="checkbox" name="video_ids" value="{{ item.id }}">
+                    <span><strong>{{ item.title }}</strong><small>{{ item.channel_name or 'Unknown' }}</small></span>
+                </label>
+                {% else %}
+                <div class="text-muted small">Chưa có bài MP3 nào trong thư viện.</div>
+                {% endfor %}
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" type="submit"><i class="bi bi-plus-lg me-1"></i>Thêm bài đã chọn</button>
+        </form>
+
+        <div class="custom-source-card">
+            <h3><i class="bi bi-file-earmark-music"></i> File MP3 từ máy</h3>
+            <input class="form-control" id="customMp3Files" type="file" accept="audio/mpeg,.mp3" multiple data-playlist-id="{{ playlist.id }}">
+            <p class="text-muted small mb-0">File được sao chép vào thư viện và tự chống trùng bằng nội dung.</p>
+            <button class="btn btn-sm btn-outline-secondary" id="uploadCustomMp3" type="button" data-playlist-id="{{ playlist.id }}"><i class="bi bi-upload me-1"></i>Nhập MP3</button>
+            <div class="small text-muted" id="customMp3UploadStatus"></div>
+        </div>
+
+        <form id="addYoutubeVideosForm" class="custom-source-card" data-playlist-id="{{ playlist.id }}">
+            <h3><i class="bi bi-youtube"></i> Link YouTube</h3>
+            <textarea class="form-control" name="urls" rows="5" placeholder="Mỗi dòng một link video YouTube, tối đa 50 link" required></textarea>
+            <button class="btn btn-sm btn-outline-danger" type="submit"><i class="bi bi-cloud-arrow-down me-1"></i>Tải MP3</button>
+        </form>
+    </div>
+</section>
+{% endif %}
+
+<section class="playlist-controls">
+    <div class="playlist-search">
+        <label class="visually-hidden" for="videoSearch">Search videos</label>
+        <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input class="form-control" id="videoSearch" type="search" placeholder="Search by video name, channel, or ID" autocomplete="off">
+            <button class="btn btn-outline-secondary" type="button" id="clearVideoSearch" title="Clear search">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+        <div class="small text-muted mt-2" id="videoSearchCount">{{ playlist.videos|length }} videos shown</div>
+    </div>
+
+    <div class="dropdown">
+        <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+            <i class="bi bi-sliders me-1"></i>Playback options
+        </button>
+        <div class="dropdown-menu dropdown-menu-end playback-menu">
+            <label class="dropdown-item playback-option" for="playbackRepeat">
+                <span><i class="bi bi-repeat me-2"></i>Repeat current track</span>
+                <input class="form-check-input" id="playbackRepeat" type="checkbox">
+            </label>
+            <label class="dropdown-item playback-option" for="playbackAutoNext">
+                <span><i class="bi bi-skip-forward me-2"></i>Auto-play next</span>
+                <input class="form-check-input" id="playbackAutoNext" type="checkbox" checked>
+            </label>
+            <label class="dropdown-item playback-option" for="playbackShuffle">
+                <span><i class="bi bi-shuffle me-2"></i>Shuffle</span>
+                <input class="form-check-input" id="playbackShuffle" type="checkbox">
+            </label>
+        </div>
+    </div>
+</section>
+
+<div class="table-shell">
+    <table class="table align-middle mb-0">
+        <thead>
+            <tr>
+                <th>Video</th>
+                <th>Channel</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th class="text-end">Media</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for video in playlist.videos %}
+            <tr class="js-video-row {{ 'video-deleted-on-yt' if video.status == 'DELETED_ON_YT' else '' }}" data-title="{{ video.title|lower }}" data-channel="{{ (video.channel_name or '')|lower }}" data-yt-id="{{ video.yt_video_id|lower }}">
+                <td>
+                    <div class="video-cell">
+                        <div class="video-thumb-wrap">
+                        {% if video.thumbnail_url %}
+                        <img src="{{ video.thumbnail_url }}" alt="" loading="lazy" onerror="this.classList.add('d-none'); this.nextElementSibling.classList.remove('d-none')">
+                        <div class="thumb-placeholder d-none"><i class="bi bi-image"></i></div>
+                        {% else %}
+                        <div class="thumb-placeholder"><i class="bi bi-image"></i></div>
+                        {% endif %}
+                        {% if video.status == 'DELETED_ON_YT' %}
+                        <span class="deleted-thumb-mark" title="Video đã bị xóa khỏi YouTube"><i class="bi bi-exclamation-triangle"></i></span>
+                        {% endif %}
+                        </div>
+                        <div>
+                            <div class="fw-semibold js-video-title">{{ video.title }}</div>
+                            <div class="small text-muted">{{ 'File cục bộ' if video.source_type == 'LOCAL_FILE' else video.yt_video_id }}</div>
+                            {% if video.download_error %}
+                            <div class="download-error mt-1">
+                                <i class="bi bi-exclamation-triangle me-1"></i>{{ video.download_error }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </td>
+                <td>{{ video.channel_name or 'Unknown' }}</td>
+                <td>{{ video.duration|duration }}</td>
+                <td>
+                    <div class="video-statuses">
+                        {% if video.local_file_path %}
+                        <span class="status-badge status-downloaded">DOWNLOADED</span>
+                        {% elif video.status != 'DELETED_ON_YT' %}
+                        <span class="status-badge status-{{ video.status|lower }}">{{ video.status }}</span>
+                        {% endif %}
+                        {% if video.status == 'DELETED_ON_YT' %}
+                        <span class="status-badge status-deleted_on_yt"><i class="bi bi-exclamation-triangle me-1"></i>Đã xóa trên YouTube</span>
+                        {% endif %}
+                        {% if video.is_hidden %}
+                        <span class="status-badge status-hidden"><i class="bi bi-eye-slash me-1"></i>Đã ẩn</span>
+                        {% endif %}
+                    </div>
+                </td>
+                <td class="text-end">
+                    <div class="video-media-actions">
+                    {% if show_hidden %}
+                    <button class="btn btn-sm btn-outline-secondary js-restore-video" type="button"
+                            data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}" title="Khôi phục bài hát">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i>Khôi phục
+                    </button>
+                    {% else %}
+                        {% if video.local_file_path %}
+                        <button class="btn btn-sm btn-outline-secondary js-play-media" type="button" data-video-id="{{ video.id }}" data-stream-url="/stream/{{ video.id }}" data-title="{{ video.title }}" title="Play media">
+                            <i class="bi bi-play-circle"></i>
+                        </button>
+                        {% else %}
+                        <span class="text-muted small">Not saved</span>
+                        {% endif %}
+                        <button class="btn btn-sm btn-outline-danger js-hide-video" type="button"
+                                data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}" title="Ẩn bài khỏi playlist">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" class="empty-state">
+                    {{ 'Chưa có bài nào được ẩn.' if show_hidden else 'No videos stored for this playlist.' }}
+                </td>
+            </tr>
+            {% endfor %}
+            <tr class="d-none" id="videoSearchEmpty">
+                <td colspan="5" class="empty-state">No videos match your search.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">YT Playlist Archiver logo</title>
+  <desc id="desc">A neon cyan and pink play mark for the dark playlist archive interface.</desc>
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#101722"/>
+      <stop offset=".55" stop-color="#171425"/>
+      <stop offset="1" stop-color="#0a0d14"/>
+    </linearGradient>
+    <linearGradient id="neon" x1="10" y1="12" x2="56" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#28f0ff"/>
+      <stop offset=".52" stop-color="#7f7cff"/>
+      <stop offset="1" stop-color="#f25cff"/>
+    </linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bg)"/>
+  <rect x="6.5" y="6.5" width="51" height="51" rx="12" fill="none" stroke="url(#neon)" stroke-width="2.2" opacity=".92"/>
+  <path d="M15 22.5c0-3 2.4-5.5 5.5-5.5h23c3.1 0 5.5 2.5 5.5 5.5v19c0 3-2.4 5.5-5.5 5.5h-23c-3.1 0-5.5-2.5-5.5-5.5z" fill="#0d111b" stroke="url(#neon)" stroke-width="2" filter="url(#glow)"/>
+  <path d="M28 26.5v11l9.5-5.5z" fill="url(#neon)" filter="url(#glow)"/>
+  <path d="M17.5 42.5h29" stroke="url(#neon)" stroke-width="2.3" stroke-linecap="round" opacity=".82"/>
+  <text x="13.5" y="18.5" fill="#28f0ff" font-family="Arial, Helvetica, sans-serif" font-size="9" font-weight="800" letter-spacing=".6">YTP</text>
+</svg>

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="panel auth-panel">
+        <div class="panel-header">
+            <h1>Register</h1>
+            <p>Create a private archive account.</p>
+        </div>
+        {% if error %}
+        <div class="alert alert-danger" role="alert">{{ error }}</div>
+        {% endif %}
+        {% if message %}
+        <div class="alert alert-success" role="alert">{{ message }}</div>
+        {% endif %}
+        <form method="post" action="/register" class="d-grid gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div>
+                <label class="form-label" for="email">Email</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-envelope"></i></span>
+                    <input class="form-control" id="email" name="email" type="email" autocomplete="email" required autofocus>
+                </div>
+            </div>
+            <div>
+                <label class="form-label" for="password">Password</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-key"></i></span>
+                    <input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                </div>
+            </div>
+            {% if invite_required %}
+            <div>
+                <label class="form-label" for="inviteCode">Invite code</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-shield-lock"></i></span>
+                    <input class="form-control" id="inviteCode" name="invite_code" type="password" autocomplete="off" required>
+                </div>
+            </div>
+            {% endif %}
+            <button class="btn btn-danger" type="submit">
+                <i class="bi bi-person-plus me-1"></i>Register
+            </button>
+        </form>
+        <div class="auth-switch">
+            Already have an account? <a href="/login">Login</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

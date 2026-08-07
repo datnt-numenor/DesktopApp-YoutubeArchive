@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="panel auth-panel">
+        <div class="panel-header">
+            <h1>{{ 'Set your password' if needs_setup else 'Unlock archive' }}</h1>
+            <p>
+                {% if needs_setup %}
+                Create the single password used to open this private archive.
+                {% else %}
+                Enter your local password. No email or username is required.
+                {% endif %}
+            </p>
+        </div>
+        {% if error %}
+        <div class="alert alert-danger" role="alert">{{ error }}</div>
+        {% endif %}
+        {% if message %}
+        <div class="alert alert-success" role="alert">{{ message }}</div>
+        {% endif %}
+        <form method="post" action="/login" class="d-grid gap-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ next }}">
+            <div>
+                <label class="form-label" for="password">{{ 'New password' if needs_setup else 'Password' }}</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-key"></i></span>
+                    <input class="form-control" id="password" name="password" type="password" minlength="8" autocomplete="{{ 'new-password' if needs_setup else 'current-password' }}" required autofocus>
+                </div>
+            </div>
+            {% if needs_setup %}
+            <div>
+                <label class="form-label" for="password_confirm">Confirm password</label>
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-key-fill"></i></span>
+                    <input class="form-control" id="password_confirm" name="password_confirm" type="password" minlength="8" autocomplete="new-password" required>
+                </div>
+            </div>
+            {% endif %}
+            <button class="btn btn-danger" type="submit">
+                <i class="bi bi-unlock me-1"></i>{{ 'Save password and open' if needs_setup else 'Unlock' }}
+            </button>
+        </form>
+    </div>
+</section>
+{% endblock %}

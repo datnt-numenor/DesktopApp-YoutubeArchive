@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="dashboard-horizontal">
+    <form id="addPlaylistForm" class="dashboard-add-form">
+        <label class="visually-hidden" for="playlistUrl">YouTube playlist URL</label>
+        <div class="dashboard-url-field">
+            <i class="bi bi-link-45deg"></i>
+            <input id="playlistUrl" name="url" type="url" placeholder="Paste Playlist URL" required>
+        </div>
+        <button class="btn btn-neon dashboard-add-button" type="submit">
+            <i class="bi bi-plus-lg"></i>
+            <span>Add Playlist</span>
+        </button>
+    </form>
+
+    <form id="createCustomPlaylistForm" class="dashboard-add-form custom-playlist-form">
+        <label class="visually-hidden" for="customPlaylistTitle">Tên playlist tự tạo</label>
+        <div class="dashboard-url-field">
+            <i class="bi bi-music-note-list"></i>
+            <input id="customPlaylistTitle" name="title" type="text" maxlength="200" placeholder="Tên playlist tự tạo" required>
+        </div>
+        <button class="btn btn-outline-secondary dashboard-add-button" type="submit">
+            <i class="bi bi-folder-plus"></i>
+            <span>Tạo playlist</span>
+        </button>
+    </form>
+
+    <section class="today-sync-panel" aria-labelledby="todaySyncTitle">
+        <button class="today-sync-head js-today-sync-toggle" type="button"
+                aria-expanded="false" aria-controls="todaySyncRuns">
+            <span class="today-sync-heading">
+                <span class="eyebrow">{{ sync_history.date_label }}</span>
+                <span class="today-sync-title" id="todaySyncTitle">Cập nhật hôm nay</span>
+            </span>
+            <span class="today-sync-totals">
+                <span class="sync-total downloaded"><strong>{{ sync_history.downloaded_count }}</strong> tải mới</span>
+                <span class="sync-total failed"><strong>{{ sync_history.failed_count }}</strong> lỗi</span>
+                <span class="sync-total unavailable"><strong>{{ sync_history.unavailable_count }}</strong> không còn trên YouTube</span>
+            </span>
+            <span class="today-sync-toggle-icon" aria-hidden="true">
+                <i class="bi bi-chevron-down"></i>
+            </span>
+        </button>
+
+        <div class="today-sync-collapse" id="todaySyncRuns" aria-hidden="true" inert>
+            <div class="today-sync-runs">
+                {% for run in sync_history.runs %}
+                <details class="sync-history-run">
+                <summary>
+                    <span class="sync-run-main">
+                        <i class="bi bi-clock-history"></i>
+                        <span>
+                            <strong>{{ run.playlist_title }}</strong>
+                            <small>{{ run.time_label }} · {{ run.source }}</small>
+                        </span>
+                    </span>
+                    <span class="sync-run-counts">
+                        <span class="text-success">+{{ run.downloaded_count }}</span>
+                        {% if run.failed_count %}<span class="text-warning">{{ run.failed_count }} lỗi</span>{% endif %}
+                        {% if run.unavailable_count %}<span class="text-danger">{{ run.unavailable_count }} đã xóa</span>{% endif %}
+                        {% if not run.events and not run.error %}<span class="text-muted">Không có bài mới</span>{% endif %}
+                    </span>
+                </summary>
+                <div class="sync-history-events">
+                    {% if run.error %}
+                    <div class="sync-history-event failed">
+                        <i class="bi bi-x-octagon"></i><span>{{ run.error }}</span>
+                    </div>
+                    {% endif %}
+                    {% for event in run.events %}
+                    <div class="sync-history-event {{ event.event_type|lower }}">
+                        {% if event.event_type == 'DOWNLOADED' %}
+                        <i class="bi bi-check-circle-fill"></i>
+                        {% elif event.event_type == 'DOWNLOAD_FAILED' %}
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        {% else %}
+                        <i class="bi bi-cloud-slash-fill"></i>
+                        {% endif %}
+                        <span>
+                            <strong>{{ event.video_title }}</strong>
+                            <small>{{ event.yt_video_id }}{% if event.message %} · {{ event.message }}{% endif %}</small>
+                        </span>
+                    </div>
+                    {% else %}
+                    {% if not run.error %}<div class="sync-history-empty">Không có thay đổi trong lần đồng bộ này.</div>{% endif %}
+                    {% endfor %}
+                </div>
+                </details>
+                {% else %}
+                <div class="sync-history-empty">Hôm nay chưa có lần đồng bộ nào.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </section>
+
+    <div class="dashboard-library-head">
+        <div>
+            <span class="eyebrow">Library</span>
+            <h2>Saved Playlists</h2>
+        </div>
+        <div class="dashboard-filter">
+            <label class="visually-hidden" for="playlistSearch">Search playlists</label>
+            <i class="bi bi-search"></i>
+            <input id="playlistSearch" type="search" placeholder="Tìm playlist hoặc bài hát" autocomplete="off">
+            <span id="playlistSearchCount">{{ playlists|length }} total</span>
+        </div>
+    </div>
+
+    <div class="dashboard-card-grid" id="playlistGrid">
+        {% for playlist in playlists %}
+        {% set archive_percent = playlist.archive_percent %}
+        {% set status_label = 'Custom' if playlist.source_type == 'CUSTOM' else ('Importing' if not playlist.video_count else ('Active' if playlist.auto_sync else 'Paused')) %}
+        <article class="dashboard-playlist-card js-playlist-card" data-title="{{ playlist.title|lower }}" data-url="{{ playlist.url|lower }}" data-source-type="{{ playlist.source_type }}">
+            <div class="dashboard-song-index d-none" aria-hidden="true">
+                {% for song in playlist.search_videos %}
+                <span data-title="{{ song.title|lower }}" data-channel="{{ song.channel_name|lower }}" data-source-id="{{ song.source_id|lower }}">{{ song.title }}</span>
+                {% endfor %}
+            </div>
+            <a class="dashboard-cover" href="/playlist/{{ playlist.id }}" aria-label="Open {{ playlist.title }}">
+                {% if playlist.thumbnail_url %}
+                <img src="{{ playlist.thumbnail_url }}" alt="" loading="lazy">
+                {% else %}
+                <span class="cover-art cover-tone-{{ loop.index0 % 6 }}">
+                    <i class="bi bi-play-fill"></i>
+                </span>
+                {% endif %}
+                <span class="dashboard-cover-shade"></span>
+                <span class="dashboard-video-count">
+                    <strong>{{ playlist.video_count }}</strong>
+                    <span>videos</span>
+                </span>
+            </a>
+
+            <div class="dashboard-card-title">
+                <h3><a href="/playlist/{{ playlist.id }}">{{ playlist.title }}</a></h3>
+                <p>{{ 'Playlist tự tạo' if playlist.source_type == 'CUSTOM' else (playlist.yt_playlist_id if playlist.yt_playlist_id is defined else playlist.url) }}</p>
+            </div>
+
+            <div class="dashboard-song-matches d-none" aria-live="polite"></div>
+
+            <div class="dashboard-card-meta">
+                <span>Archived: {{ archive_percent }}%</span>
+                <span>{{ playlist.last_synced.strftime('%Y-%m-%d %H:%M') if playlist.last_synced else 'Import pending' }}</span>
+            </div>
+
+            <div class="dashboard-progress" aria-hidden="true">
+                <span style="--archive-progress: {{ archive_percent }}%;"></span>
+            </div>
+
+            <div class="dashboard-card-meta">
+                <span>Status: <strong class="{{ 'text-success' if playlist.auto_sync else 'text-muted' }}">{{ status_label }}</strong></span>
+                <span>{{ playlist.downloaded_count }}/{{ playlist.video_count }} downloaded</span>
+            </div>
+
+            <div class="dashboard-card-actions">
+                <a class="btn btn-sm btn-ghost" href="/playlist/{{ playlist.id }}">
+                    <i class="bi bi-eye"></i>
+                    <span>View</span>
+                </a>
+                <button class="btn btn-sm btn-delete js-delete" data-playlist-id="{{ playlist.id }}" title="Delete playlist">
+                    <i class="bi bi-trash"></i>
+                    <span>Delete</span>
+                </button>
+            </div>
+
+            {% if playlist.source_type == 'YOUTUBE' %}
+            <label class="auto-sync-toggle playlist-auto-sync form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="Enable scheduled sync for this playlist">
+                <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
+                <span class="auto-sync-copy">
+                    <i class="bi bi-arrow-repeat"></i>
+                    <span class="js-auto-sync-label">{{ 'Auto-sync on' if playlist.auto_sync else 'Auto-sync off' }}</span>
+                </span>
+            </label>
+            {% else %}
+            <div class="playlist-custom-label"><i class="bi bi-folder-music"></i> Playlist thủ công</div>
+            {% endif %}
+        </article>
+        {% else %}
+        <div class="empty-state playlist-empty">No playlists archived yet.</div>
+        {% endfor %}
+        <div class="empty-state playlist-empty d-none" id="playlistSearchEmpty">No playlists match your search.</div>
+    </div>
+</section>
+{% endblock %}

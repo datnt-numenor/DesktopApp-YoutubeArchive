@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="admin-shell">
+    <div class="section-heading">
+        <div>
+            <h1>Admin</h1>
+            <p class="text-muted mb-0">User quotas, account status, and active background work.</p>
+        </div>
+    </div>
+
+    <div class="ops-grid mb-4">
+        <div class="panel">
+            <div class="panel-header compact">
+                <h2>System status</h2>
+                <p>Live checks for the local desktop application.</p>
+            </div>
+            <div class="status-grid">
+                {% for name, check in system_status.checks.items() %}
+                <div class="status-card">
+                    <span class="metric-label">{{ name.replace('_', ' ') }}</span>
+                    <strong class="{{ 'text-success' if check.ok else 'text-danger' }}">
+                        <i class="bi {{ 'bi-check-circle' if check.ok else 'bi-exclamation-triangle' }} me-1"></i>{{ check.label }}
+                    </strong>
+                    <small>{{ check.detail }}</small>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header compact">
+                <h2>Public config</h2>
+                <p>Safe-to-show deployment switches.</p>
+            </div>
+            <div class="config-list">
+                <div><span>Base URL</span><strong>{{ system_status.app_base_url }}</strong></div>
+                <div><span>Environment</span><strong>{{ system_status.environment }}</strong></div>
+                <div><span>Task backend</span><strong>{{ system_status.task_backend }}</strong></div>
+                <div><span>Storage</span><strong>{{ system_status.storage_backend }}</strong></div>
+                <div><span>Invite required</span><strong>{{ 'Yes' if system_status.invite_required else 'No' }}</strong></div>
+                <div><span>Email verification</span><strong>{{ 'Required' if system_status.email_verification_required else 'Off' }}</strong></div>
+                <div><span>Secure cookies</span><strong>{{ 'On' if system_status.secure_cookies else 'Off' }}</strong></div>
+                <div><span>SMTP</span><strong>{{ 'Configured' if system_status.smtp_configured else 'Log only' }}</strong></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-grid mb-4">
+        <div class="stat-tile">
+            <span class="metric-label">Users</span>
+            <strong>{{ system_status.counts.users or 0 }}</strong>
+        </div>
+        <div class="stat-tile">
+            <span class="metric-label">Playlists</span>
+            <strong>{{ system_status.counts.playlists or 0 }}</strong>
+        </div>
+        <div class="stat-tile">
+            <span class="metric-label">Videos</span>
+            <strong>{{ system_status.counts.videos or 0 }}</strong>
+        </div>
+        <div class="stat-tile">
+            <span class="metric-label">Saved media</span>
+            <strong>{{ system_status.counts.saved_media or 0 }}</strong>
+        </div>
+    </div>
+
+    <div class="table-shell mb-4">
+        <table class="table align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th class="text-end">Playlists</th>
+                    <th>Storage</th>
+                    <th>Status</th>
+                    <th class="text-end">Controls</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in users %}
+                {% set account = item.user %}
+                <tr>
+                    <td>
+                        <div class="fw-semibold">{{ account.email }}</div>
+                        <div class="small text-muted">{{ account.id }}</div>
+                    </td>
+                    <td class="text-end">{{ item.playlist_count }} / {{ account.playlist_quota }}</td>
+                    <td>{{ account.storage_used_bytes|bytes }} / {{ account.storage_quota_bytes|bytes }}</td>
+                    <td>
+                        <span class="status-badge {{ 'status-downloaded' if account.is_active else 'status-deleted_on_yt' }}">
+                            {{ 'ACTIVE' if account.is_active else 'DISABLED' }}
+                        </span>
+                        {% if account.is_superuser %}
+                        <span class="status-badge status-available ms-1">ADMIN</span>
+                        {% endif %}
+                        {% if not account.is_verified %}
+                        <span class="status-badge status-deleted_on_yt ms-1">UNVERIFIED</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form class="admin-user-form" method="post" action="/admin/users/{{ account.id }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <label class="form-check form-switch mb-0" title="Active account">
+                                <input class="form-check-input" name="is_active" type="checkbox" {% if account.is_active %}checked{% endif %} {% if account.id == user.id %}disabled{% endif %}>
+                            </label>
+                            {% if account.id == user.id %}
+                            <input type="hidden" name="is_active" value="on">
+                            {% endif %}
+                            <input class="form-control form-control-sm" name="playlist_quota" type="number" min="0" value="{{ account.playlist_quota }}" title="Playlist quota">
+                            <input class="form-control form-control-sm" name="storage_quota_gb" type="number" min="0" value="{{ (account.storage_quota_bytes // 1073741824) }}" title="Storage quota GB">
+                            <button class="btn btn-sm btn-outline-secondary" type="submit" title="Save">
+                                <i class="bi bi-save"></i>
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="empty-state">No users found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section-heading">
+        <h2>Active tasks</h2>
+        <span class="text-muted">{{ active_tasks|length }} running</span>
+    </div>
+    <div class="table-shell">
+        <table class="table align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Task</th>
+                    <th>Playlist</th>
+                    <th>Status</th>
+                    <th class="text-end">Progress</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in active_tasks %}
+                <tr>
+                    <td>
+                        <div class="fw-semibold">{{ task.task_id }}</div>
+                        <div class="small text-muted">{{ task.owner_id }}</div>
+                    </td>
+                    <td>{{ task.playlist_title or task.playlist_id }}</td>
+                    <td>{{ task.status }}</td>
+                    <td class="text-end">{{ task.progress or 0 }}%</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="empty-state">No active tasks.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
