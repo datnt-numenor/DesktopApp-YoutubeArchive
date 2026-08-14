@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -922,6 +922,151 @@ async def get_today_sync_history(session: AsyncSession, owner_id: str) -> dict[s
             }
             for run in runs
         ],
+    }
+
+
+async def get_scheduled_sync_history(
+    session: AsyncSession,
+    owner_id: str,
+    *,
+    date_from: date,
+    date_to: date,
+    playlist_filter: str | None = None,
+    status_filter: SyncRunStatus | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    utc_start = datetime.combine(date_from, time.min, tzinfo=local_tz).astimezone(timezone.utc)
+    utc_end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=local_tz).astimezone(timezone.utc)
+    filters = [
+        SyncRun.owner_id == owner_id,
+        SyncRun.source == SyncSource.SCHEDULED,
+        SyncRun.started_at >= utc_start,
+        SyncRun.started_at < utc_end,
+    ]
+    if playlist_filter:
+        if playlist_filter.startswith("deleted:"):
+            filters.extend(
+                [
+                    SyncRun.playlist_id.is_(None),
+                    SyncRun.playlist_title == playlist_filter.removeprefix("deleted:"),
+                ]
+            )
+        elif playlist_filter.isdigit():
+            filters.append(SyncRun.playlist_id == int(playlist_filter))
+    if status_filter:
+        filters.append(SyncRun.status == status_filter)
+
+    summary_result = await session.execute(
+        select(
+            func.count(SyncRun.id),
+            func.coalesce(func.sum(SyncRun.downloaded_count), 0),
+            func.coalesce(func.sum(SyncRun.failed_count), 0),
+            func.coalesce(func.sum(SyncRun.unavailable_count), 0),
+        ).where(*filters)
+    )
+    total_runs, downloaded_count, failed_count, unavailable_count = summary_result.one()
+    total_runs = int(total_runs or 0)
+    page_size = max(1, min(page_size, 100))
+    total_pages = max(1, (total_runs + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    runs_result = await session.execute(
+        select(SyncRun)
+        .where(*filters)
+        .options(selectinload(SyncRun.events))
+        .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    runs = list(runs_result.scalars().unique())
+
+    history_local_start = datetime.combine(
+        datetime.now().astimezone().date() - timedelta(days=29),
+        time.min,
+        tzinfo=local_tz,
+    ).astimezone(timezone.utc)
+    history_local_end = datetime.combine(
+        datetime.now().astimezone().date() + timedelta(days=1),
+        time.min,
+        tzinfo=local_tz,
+    ).astimezone(timezone.utc)
+    playlist_result = await session.execute(
+        select(SyncRun.playlist_id, SyncRun.playlist_title)
+        .where(
+            SyncRun.owner_id == owner_id,
+            SyncRun.source == SyncSource.SCHEDULED,
+            SyncRun.started_at >= history_local_start,
+            SyncRun.started_at < history_local_end,
+        )
+        .distinct()
+        .order_by(SyncRun.playlist_title.asc())
+    )
+    playlist_options = [
+        {
+            "value": str(playlist_id) if playlist_id is not None else f"deleted:{playlist_title}",
+            "label": playlist_title,
+            "is_deleted": playlist_id is None,
+        }
+        for playlist_id, playlist_title in playlist_result.all()
+    ]
+
+    groups: list[dict[str, Any]] = []
+    groups_by_date: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        local_started = _as_local_time(run.started_at)
+        local_finished = _as_local_time(run.finished_at) if run.finished_at else None
+        date_key = local_started.date().isoformat()
+        group = groups_by_date.get(date_key)
+        if group is None:
+            group = {
+                "date_key": date_key,
+                "date_label": local_started.strftime("%d/%m/%Y"),
+                "runs": [],
+            }
+            groups_by_date[date_key] = group
+            groups.append(group)
+        duration_seconds = None
+        if run.finished_at:
+            started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
+            finished = run.finished_at.replace(tzinfo=timezone.utc) if run.finished_at.tzinfo is None else run.finished_at
+            duration_seconds = max(0, round((finished - started).total_seconds()))
+        group["runs"].append(
+            {
+                "id": run.id,
+                "playlist_id": run.playlist_id,
+                "playlist_title": run.playlist_title,
+                "status": run.status.value,
+                "downloaded_count": run.downloaded_count,
+                "failed_count": run.failed_count,
+                "unavailable_count": run.unavailable_count,
+                "error": run.error,
+                "started_label": local_started.strftime("%H:%M"),
+                "finished_label": local_finished.strftime("%H:%M") if local_finished else None,
+                "duration_seconds": duration_seconds,
+                "events": [
+                    {
+                        "yt_video_id": event.yt_video_id,
+                        "video_title": event.video_title,
+                        "event_type": event.event_type.value,
+                        "message": event.message,
+                    }
+                    for event in run.events
+                ],
+            }
+        )
+
+    return {
+        "total_runs": total_runs,
+        "downloaded_count": int(downloaded_count or 0),
+        "failed_count": int(failed_count or 0),
+        "unavailable_count": int(unavailable_count or 0),
+        "groups": groups,
+        "playlist_options": playlist_options,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
     }
 
 

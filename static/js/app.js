@@ -906,6 +906,9 @@ function collapseTopNav() {
 }
 
 function sectionForPath(pathname) {
+    if (pathname.startsWith("/history")) {
+        return { nav: "history", label: "History" };
+    }
     if (pathname.startsWith("/settings")) {
         return { nav: "settings", label: "Settings" };
     }
@@ -955,6 +958,27 @@ async function refreshCurrentPage() {
 document.addEventListener("submit", async (event) => {
     if (event.target.matches('form[action="/logout"]')) {
         stopBackgroundNavigationWork();
+        return;
+    }
+
+    if (event.target.matches(".js-history-page-jump")) {
+        event.preventDefault();
+        const form = event.target;
+        const input = form.querySelector('input[name="page"]');
+        const totalPages = Math.max(1, Number.parseInt(form.dataset.totalPages || "1", 10) || 1);
+        const requestedPage = Number.parseInt(input?.value || "1", 10) || 1;
+        const targetPage = Math.min(totalPages, Math.max(1, requestedPage));
+        if (input) input.value = String(targetPage);
+
+        const targetUrl = new URL(form.action, window.location.href);
+        const params = new URLSearchParams(new FormData(form));
+        targetUrl.search = params.toString();
+        try {
+            await navigateTo(targetUrl.href, { useCache: false });
+        } catch (error) {
+            console.warn("History page jump failed; falling back to full navigation", error);
+            window.location.href = targetUrl.href;
+        }
         return;
     }
 

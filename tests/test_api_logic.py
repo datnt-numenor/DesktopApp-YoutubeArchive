@@ -339,3 +339,120 @@ def test_dashboard_renders_horizontal_layout(monkeypatch) -> None:
     assert "--storage-percent: 50%;" in response.text
     assert "<strong>7</strong>" in response.text
     assert "0.5 GB" in response.text
+
+
+@pytest.mark.parametrize(("total_pages", "expected_pagination_count"), [(1, 0), (4, 2)])
+def test_scheduled_history_page_renders_filters_summary_and_sidebar(
+    monkeypatch,
+    total_pages: int,
+    expected_pagination_count: int,
+) -> None:
+    owner = User(
+        id="history-page-owner",
+        email="history-page@example.com",
+        storage_quota_bytes=20 * 1024 * 1024 * 1024,
+        storage_used_bytes=0,
+    )
+    captured = {}
+
+    async def fake_user():
+        return owner
+
+    async def fake_session():
+        yield None
+
+    expected_page = 2 if total_pages > 1 else 1
+
+    async def fake_history(_session, owner_id: str, **kwargs):
+        captured.update({"owner_id": owner_id, **kwargs})
+        return {
+            "total_runs": 1,
+            "downloaded_count": 2,
+            "failed_count": 1,
+            "unavailable_count": 0,
+            "page": expected_page,
+            "page_size": 20,
+            "total_pages": total_pages,
+            "playlist_options": [{"value": "7", "label": "Night music", "is_deleted": False}],
+            "groups": [
+                {
+                    "date_key": "2026-08-13",
+                    "date_label": "13/08/2026",
+                    "runs": [
+                        {
+                            "id": 1,
+                            "playlist_id": 7,
+                            "playlist_title": "Night music",
+                            "status": "PARTIAL",
+                            "downloaded_count": 2,
+                            "failed_count": 1,
+                            "unavailable_count": 0,
+                            "error": None,
+                            "started_label": "12:00",
+                            "finished_label": "12:02",
+                            "duration_seconds": 120,
+                            "events": [],
+                        }
+                    ],
+                }
+            ],
+        }
+
+    async def fake_downloaded_count(_session, _owner_id: str):
+        return 0
+
+    monkeypatch.setattr(app_module.crud, "get_scheduled_sync_history", fake_history)
+    monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_downloaded_count)
+    app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
+    app_module.app.dependency_overrides[app_module.get_session] = fake_session
+    try:
+        response = TestClient(app_module.app).get(
+            f"/history?date_from=2026-08-01&date_to=2026-08-13&playlist_id=7&status=PARTIAL&page={expected_page}"
+        )
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert "Lịch sử tự đồng bộ" in response.text
+    assert 'data-nav="history"' in response.text
+    assert "Night music" in response.text
+    assert "Không có bài mới trong lần tự đồng bộ này" in response.text
+    assert captured["owner_id"] == owner.id
+    assert captured["playlist_filter"] == "7"
+    assert captured["status_filter"].value == "PARTIAL"
+    assert captured["page_size"] == 20
+    assert captured["page"] == expected_page
+    assert response.text.count('class="history-pagination history-pagination-') == expected_pagination_count
+    assert response.text.count('class="history-page-jump js-history-page-jump"') == expected_pagination_count
+    if total_pages > 1:
+        assert response.text.count(f'min="1" max="{total_pages}" value="{expected_page}"') == 2
+        assert response.text.count('name="date_from" value="2026-08-01"') >= 2
+        assert response.text.count('name="playlist_id" value="7"') >= 2
+        assert response.text.count('name="status" value="PARTIAL"') >= 2
+
+
+def test_scheduled_history_page_requires_login() -> None:
+    async def no_user():
+        return None
+
+    async def fake_session():
+        yield None
+
+    app_module.app.dependency_overrides[app_module.get_optional_user] = no_user
+    app_module.app.dependency_overrides[app_module.get_session] = fake_session
+    try:
+        response = TestClient(app_module.app).get("/history", follow_redirects=False)
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?next=/history"
+
+
+def test_history_page_jump_clamps_page_and_uses_soft_navigation() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert '.matches(".js-history-page-jump")' in script
+    assert "Math.min(totalPages, Math.max(1, requestedPage))" in script
+    assert "new URLSearchParams(new FormData(form))" in script
+    assert "await navigateTo(targetUrl.href, { useCache: false })" in script

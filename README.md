@@ -16,7 +16,8 @@ S3/R2, Docker hay Cloudflare Tunnel.
 - Xóa mềm và khôi phục từng bài mà không xóa database hoặc file MP3.
 - Bật/tắt tự đồng bộ cho từng playlist YouTube; playlist thủ công không tham gia lịch tự động.
 - Đồng bộ và tải bài mới khi ứng dụng đang đóng bằng Windows Task Scheduler.
-- Hiển thị lịch sử đồng bộ, tiến trình tải, lỗi từng video và dung lượng đã sử dụng.
+- Trang History lưu 30 ngày lịch sử Task Scheduler, có lọc theo ngày, playlist và kết quả.
+- Hiển thị tiến trình tải, lỗi từng video và dung lượng đã sử dụng.
 - Giới hạn mặc định 50 playlist và 20 GB nhạc, cảnh báo khi dùng từ 80% và 95%.
 - Bảo vệ bằng một mật khẩu duy nhất; không cần email hoặc tên đăng nhập.
 - Đổi mật khẩu trong Settings sau khi xác nhận mật khẩu hiện tại.

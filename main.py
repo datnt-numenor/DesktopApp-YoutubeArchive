@@ -3,10 +3,11 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -46,7 +47,7 @@ from database import AsyncSessionLocal, get_session, init_db
 from downloader import canonicalize_playlist_url, extract_playlist_id_from_url
 from mailer import send_email
 from media_import import receive_mp3_upload
-from models import Playlist, PlaylistSource, PlaylistVideo, User, Video
+from models import Playlist, PlaylistSource, PlaylistVideo, SyncRunStatus, User, Video
 from scheduler import scheduler, shutdown_scheduler, start_scheduler
 from schemas import (
     BaseResponse,
@@ -80,7 +81,7 @@ except ImportError:  # pragma: no cover - optional production dependency
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20260806-custom-playlists"
+ASSET_VERSION = "20260813-scheduled-history"
 
 if settings.sentry_dsn and sentry_sdk:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment)
@@ -700,6 +701,77 @@ async def index(
             "sync_history": sync_history,
             "user": current_user,
             "topbar_stats": topbar_stats,
+        },
+    )
+
+
+@app.get("/history")
+async def scheduled_sync_history_page(
+    request: Request,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    playlist_id: str | None = None,
+    result_status: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    session: AsyncSession = Depends(get_session),
+    current_user: User | None = Depends(get_optional_user),
+):
+    if not current_user:
+        return login_redirect(request)
+
+    today = date.today()
+    earliest = today - timedelta(days=29)
+
+    def parse_date(value: str | None, fallback: date) -> date:
+        try:
+            return date.fromisoformat(value) if value else fallback
+        except ValueError:
+            return fallback
+
+    selected_from = max(earliest, min(parse_date(date_from, earliest), today))
+    selected_to = max(earliest, min(parse_date(date_to, today), today))
+    if selected_from > selected_to:
+        selected_from = selected_to
+
+    allowed_statuses = {
+        SyncRunStatus.COMPLETED.value: SyncRunStatus.COMPLETED,
+        SyncRunStatus.PARTIAL.value: SyncRunStatus.PARTIAL,
+        SyncRunStatus.FAILED.value: SyncRunStatus.FAILED,
+    }
+    selected_status = result_status if result_status in allowed_statuses else ""
+    history = await crud.get_scheduled_sync_history(
+        session,
+        current_user.id,
+        date_from=selected_from,
+        date_to=selected_to,
+        playlist_filter=playlist_id,
+        status_filter=allowed_statuses.get(selected_status),
+        page=page,
+        page_size=20,
+    )
+    query_values = {
+        "date_from": selected_from.isoformat(),
+        "date_to": selected_to.isoformat(),
+        "playlist_id": playlist_id or "",
+        "status": selected_status,
+    }
+
+    def page_url(target_page: int) -> str:
+        return f"/history?{urlencode({**query_values, 'page': target_page})}"
+
+    topbar_stats = await build_topbar_stats(session, current_user)
+    return render_template(
+        request,
+        "history.html",
+        {
+            "request": request,
+            "app_name": settings.app_name,
+            "user": current_user,
+            "topbar_stats": topbar_stats,
+            "history": history,
+            "filters": query_values,
+            "previous_url": page_url(history["page"] - 1) if history["page"] > 1 else None,
+            "next_url": page_url(history["page"] + 1) if history["page"] < history["total_pages"] else None,
         },
     )
 

@@ -33,6 +33,10 @@
                     <i class="bi bi-grid-1x2"></i>
                     <span>Dashboard</span>
                 </a>
+                <a class="sidebar-link" data-nav="history" href="/history">
+                    <i class="bi bi-clock-history"></i>
+                    <span>History</span>
+                </a>
                 <a class="sidebar-link" data-nav="settings" href="/settings">
                     <i class="bi bi-sliders"></i>
                     <span>Settings</span>
@@ -58,7 +62,7 @@
             <header class="app-topbar">
                 <div>
                     <span class="eyebrow">Private archive</span>
-                    <h1 id="currentSectionLabel">{% if request.url.path.startswith('/settings') %}Settings{% elif request.url.path.startswith('/admin') %}Admin{% elif request.url.path.startswith('/playlist/') %}Playlist detail{% else %}Dashboard{% endif %}</h1>
+                    <h1 id="currentSectionLabel">{% if request.url.path.startswith('/history') %}History{% elif request.url.path.startswith('/settings') %}Settings{% elif request.url.path.startswith('/admin') %}Admin{% elif request.url.path.startswith('/playlist/') %}Playlist detail{% else %}Dashboard{% endif %}</h1>
                 </div>
                 {% set downloaded_count = topbar_stats.downloaded_count if topbar_stats is defined else 0 %}
                 {% set storage_percent = topbar_stats.storage_percent if topbar_stats is defined else 0 %}

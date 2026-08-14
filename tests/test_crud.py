@@ -6,7 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 import crud
-from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, SyncRun, User, Video, VideoStatus
+from models import (
+    Playlist,
+    PlaylistSource,
+    PlaylistVideo,
+    SyncEventType,
+    SyncRun,
+    SyncRunStatus,
+    User,
+    Video,
+    VideoStatus,
+)
 
 
 def sample_video(video_id: str, title: str = "Song") -> dict[str, object]:
@@ -454,6 +464,90 @@ async def test_cleanup_sync_history_removes_entries_older_than_30_days(session) 
     await crud.cleanup_sync_history(session, retention_days=30)
 
     assert (await session.execute(select(SyncRun))).scalars().all() == []
+
+
+async def test_scheduled_history_filters_source_owner_status_playlist_and_paginates(session) -> None:
+    owner = User(email="scheduled-history@example.com")
+    other = User(email="other-scheduled-history@example.com")
+    first_playlist = Playlist(owner=owner, yt_playlist_id="scheduled-one", title="Scheduled One", url="https://example.com/1")
+    second_playlist = Playlist(owner=owner, yt_playlist_id="scheduled-two", title="Scheduled Two", url="https://example.com/2")
+    other_playlist = Playlist(owner=other, yt_playlist_id="scheduled-other", title="Other", url="https://example.com/3")
+    downloaded = Video(**sample_video("scheduled-downloaded", "Downloaded song"))
+    failed = Video(**sample_video("scheduled-failed", "Failed song"))
+    session.add_all([owner, other, first_playlist, second_playlist, other_playlist, downloaded, failed])
+    await session.commit()
+
+    completed = await crud.create_sync_run(session, first_playlist, owner.id, "scheduled")
+    await crud.record_sync_event(session, completed, downloaded, SyncEventType.DOWNLOADED)
+    await crud.finish_sync_run(session, completed)
+    partial = await crud.create_sync_run(session, second_playlist, owner.id, "scheduled")
+    await crud.record_sync_event(session, partial, failed, SyncEventType.DOWNLOAD_FAILED, "HTTP 403")
+    await crud.finish_sync_run(session, partial)
+    manual = await crud.create_sync_run(session, first_playlist, owner.id, "manual")
+    await crud.record_sync_event(session, manual, downloaded, SyncEventType.DOWNLOADED)
+    await crud.finish_sync_run(session, manual)
+    old_scheduled = await crud.create_sync_run(session, first_playlist, owner.id, "scheduled")
+    old_scheduled.started_at = datetime.now(timezone.utc) - timedelta(days=2)
+    await crud.finish_sync_run(session, old_scheduled)
+    other_run = await crud.create_sync_run(session, other_playlist, other.id, "scheduled")
+    await crud.finish_sync_run(session, other_run)
+
+    today = datetime.now().astimezone().date()
+    history = await crud.get_scheduled_sync_history(
+        session,
+        owner.id,
+        date_from=today,
+        date_to=today,
+        page=1,
+        page_size=1,
+    )
+
+    assert history["total_runs"] == 2
+    assert history["downloaded_count"] == 1
+    assert history["failed_count"] == 1
+    assert history["total_pages"] == 2
+    assert sum(len(group["runs"]) for group in history["groups"]) == 1
+    assert {option["label"] for option in history["playlist_options"]} == {"Scheduled One", "Scheduled Two"}
+
+    partial_history = await crud.get_scheduled_sync_history(
+        session,
+        owner.id,
+        date_from=today - timedelta(days=29),
+        date_to=today,
+        playlist_filter=str(second_playlist.id),
+        status_filter=SyncRunStatus.PARTIAL,
+    )
+    assert partial_history["total_runs"] == 1
+    run = partial_history["groups"][0]["runs"][0]
+    assert run["playlist_title"] == "Scheduled Two"
+    assert run["status"] == "PARTIAL"
+    assert run["events"][0]["video_title"] == "Failed song"
+    assert run["events"][0]["message"] == "HTTP 403"
+
+
+async def test_scheduled_history_keeps_deleted_playlist_snapshot_filter(session) -> None:
+    owner = User(email="deleted-history@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="deleted-history", title="Deleted playlist", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    run = await crud.create_sync_run(session, playlist, owner.id, "scheduled")
+    run.playlist_id = None
+    await crud.finish_sync_run(session, run)
+
+    today = datetime.now().astimezone().date()
+    history = await crud.get_scheduled_sync_history(
+        session,
+        owner.id,
+        date_from=today - timedelta(days=29),
+        date_to=today,
+        playlist_filter="deleted:Deleted playlist",
+    )
+
+    assert history["total_runs"] == 1
+    assert history["playlist_options"] == [
+        {"value": "deleted:Deleted playlist", "label": "Deleted playlist", "is_deleted": True}
+    ]
+    assert history["groups"][0]["runs"][0]["playlist_title"] == "Deleted playlist"
 
 
 async def test_unavailable_transition_is_reported_only_once_per_playlist(session) -> None:
