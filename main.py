@@ -81,7 +81,7 @@ except ImportError:  # pragma: no cover - optional production dependency
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20260813-scheduled-history"
+ASSET_VERSION = "20260816-playback-recovery"
 
 if settings.sentry_dsn and sentry_sdk:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment)

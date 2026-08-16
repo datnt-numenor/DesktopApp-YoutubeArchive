@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import socket
 import sys
 import threading
 import time
 from contextlib import closing
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
 import uvicorn
 import webview
 
+from config import LOCAL_DATA_DIR
 from main import app
 
 
@@ -24,6 +27,8 @@ ICON_PATH = Path(__file__).resolve().parent / "static" / "img" / "logo-transpare
 AUTH_WINDOW_WIDTH = 900
 AUTH_WINDOW_HEIGHT = 650
 AUTH_WINDOW_MIN_SIZE = (760, 560)
+SERVER_RESTART_DELAY_SECONDS = 1.0
+DESKTOP_LOG_PATH = LOCAL_DATA_DIR / "logs" / "desktop.log"
 AUTH_PATHS = {
     "/login",
     "/register",
@@ -31,6 +36,24 @@ AUTH_PATHS = {
     "/reset-password",
     "/verify-email",
 }
+logger = logging.getLogger("desktop")
+
+
+def configure_desktop_logging() -> None:
+    """Persist desktop and background-server failures for later diagnosis."""
+    DESKTOP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        DESKTOP_LOG_PATH,
+        maxBytes=2 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    for target in (logger, logging.getLogger("uvicorn.error")):
+        target.handlers.clear()
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        target.propagate = False
 
 
 def configure_windows_app_identity() -> None:
@@ -59,6 +82,52 @@ def wait_until_listening(port: int, timeout_seconds: float = 15.0) -> None:
                 return
         time.sleep(0.1)
     raise RuntimeError("The local application server did not start in time")
+
+
+def create_local_server(port: int) -> uvicorn.Server:
+    config = uvicorn.Config(
+        app,
+        host=HOST,
+        port=port,
+        log_level="info",
+        access_log=False,
+        log_config=None,
+    )
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    return server
+
+
+def supervise_local_server(
+    port: int,
+    stop_event: threading.Event,
+    server_state: dict[str, uvicorn.Server],
+    *,
+    restart_delay_seconds: float = SERVER_RESTART_DELAY_SECONDS,
+) -> None:
+    """Keep the local API alive while the desktop window is open."""
+    restart_count = 0
+    while not stop_event.is_set():
+        server = create_local_server(port)
+        server_state["server"] = server
+        try:
+            server.run()
+        except BaseException:  # noqa: BLE001 - a dead server must not leave a frozen-looking UI
+            logger.exception("Local media server crashed")
+        finally:
+            if server_state.get("server") is server:
+                server_state.pop("server", None)
+
+        if stop_event.is_set():
+            break
+
+        restart_count += 1
+        logger.error(
+            "Local media server stopped unexpectedly; restarting in %.1f second(s) (attempt %d)",
+            restart_delay_seconds,
+            restart_count,
+        )
+        stop_event.wait(restart_delay_seconds)
 
 
 def is_auth_url(url: str | None) -> bool:
@@ -119,24 +188,36 @@ def open_desktop_window(url: str) -> None:
 
 
 def main() -> None:
+    configure_desktop_logging()
     configure_windows_app_identity()
     if not ICON_PATH.is_file():
         raise FileNotFoundError(f"Application icon not found: {ICON_PATH}")
 
     port = choose_local_port()
-    config = uvicorn.Config(app, host=HOST, port=port, log_level="info", access_log=False)
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None
-
-    server_thread = threading.Thread(target=server.run, name="ytarchive-local-server", daemon=True)
+    stop_event = threading.Event()
+    server_state: dict[str, uvicorn.Server] = {}
+    server_thread = threading.Thread(
+        target=supervise_local_server,
+        args=(port, stop_event, server_state),
+        name="ytarchive-local-server-supervisor",
+        daemon=False,
+    )
     server_thread.start()
 
     try:
         wait_until_listening(port)
+        logger.info("Desktop app started on http://%s:%d", HOST, port)
         open_desktop_window(f"http://{HOST}:{port}")
     finally:
-        server.should_exit = True
+        stop_event.set()
+        server = server_state.get("server")
+        if server is not None:
+            server.should_exit = True
         server_thread.join(timeout=10)
+        if server_thread.is_alive():
+            logger.error("Local media server did not stop within the shutdown timeout")
+        else:
+            logger.info("Desktop app stopped")
 
 
 if __name__ == "__main__":

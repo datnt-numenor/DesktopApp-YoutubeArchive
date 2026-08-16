@@ -1,4 +1,5 @@
 import socket
+import threading
 from types import SimpleNamespace
 
 import desktop
@@ -21,6 +22,32 @@ def test_choose_local_port_falls_back_when_preferred_port_is_busy(monkeypatch) -
 
     assert selected_port != occupied_port
     assert 0 < selected_port <= 65535
+
+
+def test_server_supervisor_restarts_after_unexpected_exit(monkeypatch) -> None:
+    stop_event = threading.Event()
+    server_state = {}
+    servers = []
+
+    class FakeServer:
+        should_exit = False
+
+        def run(self) -> None:
+            servers.append(self)
+            if len(servers) == 2:
+                stop_event.set()
+
+    monkeypatch.setattr(desktop, "create_local_server", lambda _port: FakeServer())
+
+    desktop.supervise_local_server(
+        8765,
+        stop_event,
+        server_state,
+        restart_delay_seconds=0,
+    )
+
+    assert len(servers) == 2
+    assert server_state == {}
 
 
 class FakeLoadedEvent:

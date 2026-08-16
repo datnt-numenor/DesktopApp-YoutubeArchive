@@ -430,7 +430,13 @@ const playbackState = {
     queue: [],
     currentIndex: -1,
     currentTrack: null,
+    lastKnownTime: 0,
+    shouldResume: false,
+    recoveryAttempts: 0,
+    recoveryTimer: null,
 };
+
+const MAX_PLAYBACK_RECOVERY_ATTEMPTS = 4;
 
 function loadPlaybackSettings() {
     const defaults = { repeat: false, autoNext: true, shuffle: false };
@@ -654,6 +660,69 @@ function showGlobalPlayer() {
     updateGlobalPlayerControls();
 }
 
+function clearPlaybackRecoveryTimer() {
+    if (playbackState.recoveryTimer) {
+        window.clearTimeout(playbackState.recoveryTimer);
+        playbackState.recoveryTimer = null;
+    }
+}
+
+function isAutoplayPolicyError(error) {
+    return error?.name === "NotAllowedError";
+}
+
+function playbackRetryUrl(url) {
+    const retryUrl = new URL(url, window.location.origin);
+    retryUrl.searchParams.set("_playback_retry", String(Date.now()));
+    return retryUrl.href;
+}
+
+function schedulePlaybackRecovery() {
+    if (!playbackState.currentTrack || !playbackState.shouldResume || playbackState.recoveryTimer) return;
+    if (playbackState.recoveryAttempts >= MAX_PLAYBACK_RECOVERY_ATTEMPTS) {
+        showToast("Local media server is unavailable. Please restart the app if playback does not recover.", "danger");
+        return;
+    }
+
+    if (playbackState.recoveryAttempts === 0) {
+        showToast("Local media connection was interrupted. Reconnecting...", "warning");
+    }
+    const delay = 1200 * (playbackState.recoveryAttempts + 1);
+    playbackState.recoveryTimer = window.setTimeout(() => {
+        playbackState.recoveryTimer = null;
+        recoverCurrentPlayback();
+    }, delay);
+}
+
+async function recoverCurrentPlayback() {
+    const { media } = getPlayerElements();
+    const track = playbackState.currentTrack;
+    if (!media || !track?.url || !playbackState.shouldResume) return;
+
+    playbackState.recoveryAttempts += 1;
+    const resumeAt = playbackState.lastKnownTime;
+    media.src = playbackRetryUrl(track.url);
+    media.load();
+
+    const restorePosition = () => {
+        if (resumeAt > 0 && Number.isFinite(media.duration) && media.duration > 0) {
+            media.currentTime = Math.min(resumeAt, Math.max(0, media.duration - 0.25));
+        }
+    };
+    media.addEventListener("loadedmetadata", restorePosition, { once: true });
+
+    try {
+        await media.play();
+    } catch (error) {
+        console.warn("Media playback recovery failed", error);
+        if (isAutoplayPolicyError(error)) {
+            showToast("Press play in the media bar to resume playback", "warning");
+        } else {
+            schedulePlaybackRecovery();
+        }
+    }
+}
+
 function stopPlayback() {
     const { bar, media, title, seek, currentTime, duration } = getPlayerElements();
     if (media) {
@@ -672,6 +741,10 @@ function stopPlayback() {
     document.body.classList.remove("has-player-bar");
     playbackState.currentTrack = null;
     playbackState.currentIndex = -1;
+    playbackState.lastKnownTime = 0;
+    playbackState.shouldResume = false;
+    playbackState.recoveryAttempts = 0;
+    clearPlaybackRecoveryTimer();
     syncVisiblePlaybackState();
     updateGlobalPlayerControls();
 }
@@ -711,6 +784,7 @@ async function playTrack(track, options = {}) {
     if (resetQueue) resetQueueFromPage(track);
 
     const playableTrack = toPlayableTrack(track);
+    const changedTrack = !sameTrack(playbackState.currentTrack, playableTrack);
     playbackState.currentTrack = playableTrack;
     playbackState.currentIndex = playbackState.queue.findIndex((item) => sameTrack(item, playableTrack));
     if (playbackState.currentIndex < 0) {
@@ -719,9 +793,13 @@ async function playTrack(track, options = {}) {
     }
 
     const absoluteUrl = new URL(playableTrack.url, window.location.origin).href;
-    if (media.src !== absoluteUrl) {
+    if (changedTrack || media.src !== absoluteUrl || media.error) {
         media.src = playableTrack.url;
     }
+    if (changedTrack) playbackState.lastKnownTime = 0;
+    playbackState.shouldResume = true;
+    playbackState.recoveryAttempts = 0;
+    clearPlaybackRecoveryTimer();
     title.textContent = playableTrack.title;
     applyPlaybackSettingsToMedia();
     showGlobalPlayer();
@@ -732,8 +810,12 @@ async function playTrack(track, options = {}) {
         await media.play();
         updateGlobalPlayerControls();
     } catch (error) {
-        console.warn("Media playback was blocked", error);
-        showToast("Press play in the media bar to start playback", "warning");
+        console.warn("Media playback failed", error);
+        if (isAutoplayPolicyError(error)) {
+            showToast("Press play in the media bar to start playback", "warning");
+        } else {
+            schedulePlaybackRecovery();
+        }
     }
 }
 
@@ -759,6 +841,7 @@ async function handleTrackEnded() {
     const { media } = getPlayerElements();
 
     if (playbackSettings.repeat && media) {
+        playbackState.shouldResume = true;
         media.currentTime = 0;
         await media.play();
         return;
@@ -766,6 +849,8 @@ async function handleTrackEnded() {
 
     if (playbackSettings.autoNext) {
         await playTrack(nextTrack(1), { resetQueue: false });
+    } else {
+        playbackState.shouldResume = false;
     }
 }
 
@@ -797,6 +882,22 @@ function initGlobalPlayer() {
     const { media, playPause, seek, volume, mute, shuffle, repeat } = getPlayerElements();
     if (media) {
         media.addEventListener("ended", handleTrackEnded);
+        media.addEventListener("timeupdate", () => {
+            if (Number.isFinite(media.currentTime) && media.currentTime > 0) {
+                playbackState.lastKnownTime = media.currentTime;
+            }
+        });
+        media.addEventListener("playing", () => {
+            playbackState.shouldResume = true;
+            playbackState.recoveryAttempts = 0;
+            clearPlaybackRecoveryTimer();
+        });
+        media.addEventListener("error", () => {
+            if (playbackState.currentTrack && playbackState.shouldResume) {
+                console.warn("Media source failed", media.error);
+                schedulePlaybackRecovery();
+            }
+        });
         ["timeupdate", "loadedmetadata", "durationchange", "play", "pause", "volumechange", "emptied"].forEach((eventName) => {
             media.addEventListener(eventName, updateGlobalPlayerControls);
         });
@@ -809,13 +910,26 @@ function initGlobalPlayer() {
     playPause?.addEventListener("click", async () => {
         if (!media?.src) return;
         if (media.paused) {
+            playbackState.shouldResume = true;
             try {
-                await media.play();
+                if (media.error || media.readyState === HTMLMediaElement.HAVE_NOTHING) {
+                    playbackState.recoveryAttempts = 0;
+                    clearPlaybackRecoveryTimer();
+                    await recoverCurrentPlayback();
+                } else {
+                    await media.play();
+                }
             } catch (error) {
-                console.warn("Media playback was blocked", error);
-                showToast("Press play in the media bar to start playback", "warning");
+                console.warn("Media playback failed", error);
+                if (isAutoplayPolicyError(error)) {
+                    showToast("Playback was blocked. Press play again to resume.", "warning");
+                } else {
+                    schedulePlaybackRecovery();
+                }
             }
         } else {
+            playbackState.shouldResume = false;
+            clearPlaybackRecoveryTimer();
             media.pause();
         }
         updateGlobalPlayerControls();
