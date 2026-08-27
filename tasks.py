@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 import crud
 from config import BASE_DIR, settings
 from database import AsyncSessionLocal
-from downloader import cache_thumbnail, download_video, extract_playlist_metadata, extract_video_metadata
+from downloader import DownloaderError, cache_thumbnail, download_video, extract_playlist_metadata, extract_video_metadata
 from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User
 from storage import storage
 from sync_lock import sync_process_lock
@@ -93,6 +93,35 @@ def build_media_object_key(owner_id: str, playlist_id: int, filename: str) -> st
 def is_youtube_unavailable_error(message: str) -> bool:
     normalized = message.lower()
     return any(marker in normalized for marker in UNAVAILABLE_ERROR_MARKERS)
+
+
+async def _probe_missing_playlist_videos(
+    playlist: Playlist,
+    metadata: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    current_yt_ids = {item["yt_video_id"] for item in metadata["videos"]}
+    results: dict[str, dict[str, Any]] = {}
+    for association in playlist.playlist_videos:
+        video = association.video
+        if video.yt_video_id in current_yt_ids:
+            continue
+        url = f"https://www.youtube.com/watch?v={video.yt_video_id}"
+        try:
+            video_metadata = await extract_video_metadata(url)
+        except DownloaderError as exc:
+            message = str(exc) or exc.__class__.__name__
+            if is_youtube_unavailable_error(message):
+                results[video.yt_video_id] = {"state": "unavailable", "error": message}
+            else:
+                results[video.yt_video_id] = {"state": "unknown", "error": message}
+                logger.warning(
+                    "Could not verify whether missing playlist video %s is still available: %s",
+                    video.yt_video_id,
+                    message,
+                )
+        else:
+            results[video.yt_video_id] = {"state": "available", "metadata": video_metadata}
+    return results
 
 
 def _redis_client() -> Any | None:
@@ -330,12 +359,14 @@ async def sync_playlist(
 
     try:
         metadata = await extract_playlist_metadata(playlist.url)
+        missing_video_availability = await _probe_missing_playlist_videos(playlist, metadata)
         newly_unavailable = []
         playlist = await crud.sync_playlist_metadata(
             session,
             playlist,
             metadata,
             newly_unavailable=newly_unavailable,
+            missing_video_availability=missing_video_availability,
         )
         for video in newly_unavailable:
             await crud.record_sync_event(session, history_run, video, SyncEventType.UNAVAILABLE)

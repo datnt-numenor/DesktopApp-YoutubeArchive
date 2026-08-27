@@ -101,6 +101,7 @@ class VideoSchema(BaseModel):
     download_error: str | None = None
     last_download_attempt_at: datetime | None = None
     is_hidden: bool = False
+    is_removed_from_youtube_playlist: bool = False
     source_type: str = "YOUTUBE"
 
 

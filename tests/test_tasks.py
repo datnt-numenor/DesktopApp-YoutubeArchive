@@ -1,5 +1,6 @@
 import tasks
 import crud
+from downloader import DownloaderError
 from models import Playlist, PlaylistVideo, User, Video, VideoStatus
 from redis.exceptions import RedisError
 
@@ -49,6 +50,43 @@ def test_unavailable_error_detection() -> None:
     assert tasks.is_youtube_unavailable_error("ERROR: Video unavailable. This video is not available")
     assert tasks.is_youtube_unavailable_error("Private video")
     assert not tasks.is_youtube_unavailable_error("HTTP Error 416: Requested range not satisfiable")
+
+
+async def test_missing_playlist_video_probe_distinguishes_available_unavailable_and_unknown(monkeypatch) -> None:
+    owner = User(email="probe@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="probe-list", title="Probe", url="https://example.com")
+    videos = [
+        Video(yt_video_id="public", title="Public", channel_name="", duration=0),
+        Video(yt_video_id="private", title="Private", channel_name="", duration=0),
+        Video(yt_video_id="blocked", title="Blocked", channel_name="", duration=0),
+    ]
+    playlist.playlist_videos = [PlaylistVideo(video=video) for video in videos]
+
+    async def fake_extract(url: str):
+        video_id = url.rsplit("=", 1)[-1]
+        if video_id == "private":
+            raise DownloaderError("ERROR: Video unavailable. This video is private")
+        if video_id == "blocked":
+            raise DownloaderError("ERROR: Sign in to confirm you're not a bot")
+        return {
+            "yt_video_id": video_id,
+            "title": "Still public",
+            "channel_name": "Channel",
+            "duration": 120,
+            "thumbnail_url": None,
+            "is_available_on_youtube": True,
+        }
+
+    monkeypatch.setattr(tasks, "extract_video_metadata", fake_extract)
+
+    result = await tasks._probe_missing_playlist_videos(
+        playlist,
+        {"videos": [], "title": "Probe", "url": playlist.url},
+    )
+
+    assert result["public"]["state"] == "available"
+    assert result["private"]["state"] == "unavailable"
+    assert result["blocked"]["state"] == "unknown"
 
 
 def test_active_task_listing_hides_finished_tasks() -> None:

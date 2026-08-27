@@ -77,7 +77,7 @@ async def test_library_song_is_reused_and_archive_ignores_hidden_rows(session) -
     assert detail.videos[0].local_file_path == "downloads/library-song.mp3"
 
 
-async def test_deleted_video_is_not_reopened_by_metadata_sync(session) -> None:
+async def test_available_metadata_restores_a_previously_deleted_video(session) -> None:
     owner = User(email="owner@example.com")
     video = Video(**sample_video("deleted123"), status=VideoStatus.DELETED_ON_YT)
     session.add_all([owner, video])
@@ -98,8 +98,8 @@ async def test_deleted_video_is_not_reopened_by_metadata_sync(session) -> None:
 
     targets = await crud.list_available_download_targets(session, playlist.id, "mp3")
 
-    assert video.status == VideoStatus.DELETED_ON_YT
-    assert targets == []
+    assert video.status == VideoStatus.AVAILABLE
+    assert [item.video.yt_video_id for item in targets] == ["deleted123"]
 
 
 async def test_unavailable_sync_preserves_archived_metadata_and_local_media(session) -> None:
@@ -565,6 +565,7 @@ async def test_unavailable_transition_is_reported_only_once_per_playlist(session
         playlist,
         {"title": "Transition", "url": "https://example.com", "videos": []},
         newly_unavailable=first_changes,
+        missing_video_availability={"transition-video": {"state": "unavailable"}},
     )
     playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
     second_changes = []
@@ -573,7 +574,82 @@ async def test_unavailable_transition_is_reported_only_once_per_playlist(session
         playlist,
         {"title": "Transition", "url": "https://example.com", "videos": []},
         newly_unavailable=second_changes,
+        missing_video_availability={"transition-video": {"state": "unavailable"}},
     )
 
     assert [item.yt_video_id for item in first_changes] == ["transition-video"]
     assert second_changes == []
+
+
+async def test_missing_but_available_video_is_marked_removed_from_playlist(session) -> None:
+    owner = User(email="removed@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="removed-list", title="Removed", url="https://example.com")
+    video = Video(**sample_video("still-public"), status=VideoStatus.AVAILABLE)
+    association = PlaylistVideo(playlist=playlist, video=video)
+    session.add_all([owner, playlist, video, association])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+    newly_unavailable = []
+
+    await crud.sync_playlist_metadata(
+        session,
+        playlist,
+        {"title": "Removed", "url": "https://example.com", "videos": []},
+        newly_unavailable=newly_unavailable,
+        missing_video_availability={
+            "still-public": {"state": "available", "metadata": sample_video("still-public", "Current title")}
+        },
+    )
+    detail = await crud.get_playlist_detail(session, playlist.id, owner.id)
+
+    assert newly_unavailable == []
+    assert detail.videos[0].status == VideoStatus.AVAILABLE.value
+    assert detail.videos[0].is_removed_from_youtube_playlist is True
+    assert detail.videos[0].title == "Current title"
+
+
+async def test_unknown_missing_video_state_does_not_create_false_deletion(session) -> None:
+    owner = User(email="unknown-missing@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="unknown-list", title="Unknown", url="https://example.com")
+    video = Video(**sample_video("unknown-video"), status=VideoStatus.AVAILABLE)
+    association = PlaylistVideo(playlist=playlist, video=video)
+    session.add_all([owner, playlist, video, association])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+    newly_unavailable = []
+
+    await crud.sync_playlist_metadata(
+        session,
+        playlist,
+        {"title": "Unknown", "url": "https://example.com", "videos": []},
+        newly_unavailable=newly_unavailable,
+        missing_video_availability={"unknown-video": {"state": "unknown", "error": "HTTP 403"}},
+    )
+    detail = await crud.get_playlist_detail(session, playlist.id, owner.id)
+
+    assert newly_unavailable == []
+    assert detail.videos[0].status == VideoStatus.AVAILABLE.value
+    assert detail.videos[0].is_removed_from_youtube_playlist is False
+
+
+async def test_video_readded_to_playlist_clears_removed_marker(session) -> None:
+    owner = User(email="readded@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="readded-list", title="Readded", url="https://example.com")
+    video = Video(**sample_video("readded-video"), status=VideoStatus.AVAILABLE)
+    association = PlaylistVideo(
+        playlist=playlist,
+        video=video,
+        removed_from_youtube_playlist_at=datetime.now(timezone.utc),
+    )
+    session.add_all([owner, playlist, video, association])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+
+    await crud.sync_playlist_metadata(
+        session,
+        playlist,
+        {"title": "Readded", "url": "https://example.com", "videos": [sample_video("readded-video")]},
+    )
+    detail = await crud.get_playlist_detail(session, playlist.id, owner.id)
+
+    assert detail.videos[0].is_removed_from_youtube_playlist is False

@@ -1808,6 +1808,12 @@ a:hover {
     color: #ff9aac;
 }
 
+.status-removed-from-playlist {
+    background: rgba(255, 193, 7, .12);
+    border-color: rgba(255, 193, 7, .3);
+    color: #ffd36a;
+}
+
 .status-hidden {
     background: rgba(170, 180, 200, .1);
     border-color: rgba(170, 180, 200, .24);

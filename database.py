@@ -83,6 +83,10 @@ async def init_db() -> None:
                 )
             if "hidden_at" not in existing_columns:
                 await conn.execute(text("ALTER TABLE playlist_video ADD COLUMN hidden_at DATETIME"))
+            if "removed_from_youtube_playlist_at" not in existing_columns:
+                await conn.execute(
+                    text("ALTER TABLE playlist_video ADD COLUMN removed_from_youtube_playlist_at DATETIME")
+                )
 
             result = await conn.execute(text("PRAGMA table_info(users)"))
             user_columns = {row[1] for row in result.fetchall()}

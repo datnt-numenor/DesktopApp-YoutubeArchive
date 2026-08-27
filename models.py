@@ -134,6 +134,7 @@ class PlaylistVideo(Base):
     download_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_download_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     youtube_unavailable_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removed_from_youtube_playlist_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     playlist: Mapped[Playlist] = relationship(back_populates="playlist_videos")

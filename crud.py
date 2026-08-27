@@ -449,6 +449,8 @@ async def upsert_playlist_from_metadata(session: AsyncSession, owner: User, meta
             _apply_video_metadata(video, video_data)
             if not video_data.get("is_available_on_youtube", True):
                 video.status = VideoStatus.DELETED_ON_YT
+            elif video.status == VideoStatus.DELETED_ON_YT:
+                video.status = VideoStatus.AVAILABLE
 
         association = await _get_playlist_video(session, playlist.id, video.id)
         if not association:
@@ -502,19 +504,37 @@ async def sync_playlist_metadata(
     playlist: Playlist,
     metadata: dict[str, Any],
     newly_unavailable: list[Video] | None = None,
+    missing_video_availability: dict[str, dict[str, Any]] | None = None,
 ) -> Playlist:
     current_yt_ids = {video["yt_video_id"] for video in metadata["videos"]}
+    missing_video_availability = missing_video_availability or {}
     playlist.title = metadata["title"]
     playlist.url = metadata["url"]
     playlist.last_synced = datetime.now(timezone.utc)
 
     for association in playlist.playlist_videos:
-        if association.video.yt_video_id not in current_yt_ids:
-            association.video.status = VideoStatus.DELETED_ON_YT
-            if association.youtube_unavailable_at is None:
-                association.youtube_unavailable_at = datetime.now(timezone.utc)
-                if newly_unavailable is not None:
-                    newly_unavailable.append(association.video)
+        yt_video_id = association.video.yt_video_id
+        if yt_video_id not in current_yt_ids:
+            availability = missing_video_availability.get(yt_video_id, {})
+            state = availability.get("state", "unknown")
+            if state == "available":
+                video_metadata = availability.get("metadata")
+                if video_metadata:
+                    _apply_video_metadata(association.video, video_metadata)
+                if association.removed_from_youtube_playlist_at is None:
+                    association.removed_from_youtube_playlist_at = datetime.now(timezone.utc)
+                association.youtube_unavailable_at = None
+                if association.video.status == VideoStatus.DELETED_ON_YT:
+                    association.video.status = (
+                        VideoStatus.DOWNLOADED if association.local_file_path else VideoStatus.AVAILABLE
+                    )
+            elif state == "unavailable":
+                association.removed_from_youtube_playlist_at = None
+                association.video.status = VideoStatus.DELETED_ON_YT
+                if association.youtube_unavailable_at is None:
+                    association.youtube_unavailable_at = datetime.now(timezone.utc)
+                    if newly_unavailable is not None:
+                        newly_unavailable.append(association.video)
 
     for video_data in metadata["videos"]:
         video = await _get_video_by_youtube_id(session, video_data["yt_video_id"])
@@ -524,17 +544,23 @@ async def sync_playlist_metadata(
             await session.flush()
         else:
             _apply_video_metadata(video, video_data)
-            if not video_data.get("is_available_on_youtube", True):
-                video.status = VideoStatus.DELETED_ON_YT
 
         association = await _get_playlist_video(session, playlist.id, video.id)
         if not association:
             association = PlaylistVideo(playlist_id=playlist.id, video_id=video.id)
             session.add(association)
-        if not video_data.get("is_available_on_youtube", True) and association.youtube_unavailable_at is None:
-            association.youtube_unavailable_at = datetime.now(timezone.utc)
-            if newly_unavailable is not None:
-                newly_unavailable.append(video)
+
+        association.removed_from_youtube_playlist_at = None
+        if not video_data.get("is_available_on_youtube", True):
+            video.status = VideoStatus.DELETED_ON_YT
+            if association.youtube_unavailable_at is None:
+                association.youtube_unavailable_at = datetime.now(timezone.utc)
+                if newly_unavailable is not None:
+                    newly_unavailable.append(video)
+        else:
+            association.youtube_unavailable_at = None
+            if video.status == VideoStatus.DELETED_ON_YT:
+                video.status = VideoStatus.DOWNLOADED if association.local_file_path else VideoStatus.AVAILABLE
 
     await session.commit()
     await session.refresh(playlist)
@@ -573,6 +599,7 @@ async def get_playlist_detail(
             download_error=association.download_error,
             last_download_attempt_at=association.last_download_attempt_at,
             is_hidden=association.hidden_at is not None,
+            is_removed_from_youtube_playlist=association.removed_from_youtube_playlist_at is not None,
             source_type=association.video.source_type.value,
         )
         for association in associations

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import database
 
 
-async def test_init_db_adds_hidden_at_to_legacy_playlist_video(tmp_path: Path, monkeypatch) -> None:
+async def test_init_db_adds_sync_state_columns_to_legacy_playlist_video(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "legacy.db"
     database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
     legacy_engine = create_async_engine(database_url)
@@ -36,3 +36,4 @@ async def test_init_db_adds_hidden_at_to_legacy_playlist_video(tmp_path: Path, m
 
     await legacy_engine.dispose()
     assert "hidden_at" in columns
+    assert "removed_from_youtube_playlist_at" in columns

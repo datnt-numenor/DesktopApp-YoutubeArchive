@@ -161,6 +161,9 @@
                         {% if video.status == 'DELETED_ON_YT' %}
                         <span class="status-badge status-deleted_on_yt"><i class="bi bi-exclamation-triangle me-1"></i>Đã xóa trên YouTube</span>
                         {% endif %}
+                        {% if video.is_removed_from_youtube_playlist %}
+                        <span class="status-badge status-removed-from-playlist"><i class="bi bi-list-x me-1"></i>Đã gỡ khỏi playlist YouTube</span>
+                        {% endif %}
                         {% if video.is_hidden %}
                         <span class="status-badge status-hidden"><i class="bi bi-eye-slash me-1"></i>Đã ẩn</span>
                         {% endif %}

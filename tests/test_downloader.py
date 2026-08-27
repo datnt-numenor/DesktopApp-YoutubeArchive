@@ -1,4 +1,7 @@
 from pathlib import Path
+import subprocess
+
+import pytest
 
 import downloader
 
@@ -64,25 +67,56 @@ def test_existing_mp3_is_reused_and_temporary_files_are_cleaned(tmp_path: Path) 
 
 
 def test_mp3_download_prefers_m4a_source(monkeypatch, tmp_path: Path) -> None:
-    captured_options: dict[str, object] = {}
+    captured_arguments: list[str] = []
 
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
-            captured_options.update(options)
+    def fake_run(arguments: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        captured_arguments.extend(arguments)
+        (tmp_path / "video456.mp3").write_bytes(b"mp3")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def download(self, urls: list[str]) -> int:
-            (tmp_path / "video456.mp3").write_bytes(b"mp3")
-            return 0
-
-    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(downloader, "_run_ytdlp", fake_run)
 
     result = downloader._download_video_sync("video456", tmp_path)
 
     assert result == tmp_path / "video456.mp3"
-    assert str(captured_options["format"]).startswith("bestaudio[ext=m4a]")
+    format_index = captured_arguments.index("--format")
+    assert captured_arguments[format_index + 1].startswith("bestaudio[ext=m4a]")
+    assert "--audio-format" in captured_arguments
+    assert captured_arguments[captured_arguments.index("--audio-format") + 1] == "mp3"
+
+
+def test_transient_403_is_retried_with_forced_update(monkeypatch, tmp_path: Path) -> None:
+    force_update_values: list[bool] = []
+
+    def fake_download(_video_id: str, output_dir: Path, *, force_update: bool = False) -> Path:
+        force_update_values.append(force_update)
+        if len(force_update_values) == 1:
+            raise downloader.DownloaderError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        target = output_dir / "video789.mp3"
+        target.write_bytes(b"mp3")
+        return target
+
+    monkeypatch.setattr(downloader, "_download_once", fake_download)
+    monkeypatch.setattr(downloader.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(downloader.random, "uniform", lambda _low, _high: 1.0)
+
+    result = downloader._download_video_sync("video789", tmp_path)
+
+    assert result == tmp_path / "video789.mp3"
+    assert force_update_values == [False, True]
+
+
+def test_unavailable_video_is_not_retried(monkeypatch, tmp_path: Path) -> None:
+    attempts = 0
+
+    def fake_download(_video_id: str, _output_dir: Path, *, force_update: bool = False) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise downloader.DownloaderError("ERROR: Video unavailable. This video is private")
+
+    monkeypatch.setattr(downloader, "_download_once", fake_download)
+
+    with pytest.raises(downloader.DownloaderError, match="Video unavailable"):
+        downloader._download_video_sync("private123", tmp_path)
+
+    assert attempts == 1

@@ -10,6 +10,7 @@ S3/R2, Docker hay Cloudflare Tunnel.
 - Thêm playlist YouTube và lưu metadata vào SQLite.
 - Tạo playlist thủ công từ bài đã tải, file MP3 trong máy hoặc link video YouTube riêng lẻ.
 - Đồng bộ để phát hiện video mới hoặc video không còn trên YouTube; metadata và thumbnail cũ vẫn được giữ lại.
+- Phân biệt video thật sự bị xóa/private với video vẫn hoạt động nhưng đã được gỡ khỏi playlist nguồn.
 - Tải và lưu trữ MP3 bằng `yt-dlp` và FFmpeg.
 - Tìm kiếm, phát media, repeat, shuffle và tự chuyển bài.
 - Tìm playlist theo tên playlist, tên bài, kênh hoặc YouTube video ID.
@@ -29,6 +30,7 @@ Mặc định, toàn bộ dữ liệu riêng của ứng dụng nằm trong:
 ```text
 data/
 |-- ytarchive.db
+|-- tools/yt-dlp.exe
 `-- downloads/
 ```
 
@@ -39,6 +41,11 @@ Có thể đổi vị trí lưu bằng biến môi trường `YTARCHIVE_DESKTOP_
 
 - Python 3.10 trở lên.
 - FFmpeg và `ffprobe` phải có trong `PATH` để tải và đọc metadata MP3.
+- Node.js 22 trở lên phải có trong `PATH` để yt-dlp giải JavaScript challenge của YouTube.
+
+Ứng dụng tự tải `yt-dlp.exe` chính thức vào `data/tools`, xác minh SHA-256 và kiểm tra
+bản stable mới mỗi tuần. Nếu cập nhật thất bại, ứng dụng tiếp tục dùng bản đang hoạt động;
+bản trước đó được giữ lại để rollback. Các file công cụ này là dữ liệu cục bộ và không được commit lên Git.
 
 Cài FFmpeg bằng Chocolatey:
 
