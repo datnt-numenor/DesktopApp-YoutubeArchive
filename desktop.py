@@ -74,8 +74,19 @@ def choose_local_port() -> int:
 
 
 def wait_until_listening(port: int, timeout_seconds: float = 15.0) -> None:
+    wait_until_server_ready(port, threading.Event(), timeout_seconds)
+
+
+def wait_until_server_ready(
+    port: int,
+    startup_failed: threading.Event,
+    timeout_seconds: float = 15.0,
+) -> None:
+    """Wait for the local server, failing early after an application startup error."""
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        if startup_failed.is_set():
+            raise RuntimeError("The local application server failed during startup; see desktop.log")
         with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
             probe.settimeout(0.25)
             if probe.connect_ex((HOST, port)) == 0:
@@ -102,6 +113,7 @@ def supervise_local_server(
     port: int,
     stop_event: threading.Event,
     server_state: dict[str, uvicorn.Server],
+    startup_failed: threading.Event | None = None,
     *,
     restart_delay_seconds: float = SERVER_RESTART_DELAY_SECONDS,
 ) -> None:
@@ -114,6 +126,9 @@ def supervise_local_server(
             server.run()
         except BaseException:  # noqa: BLE001 - a dead server must not leave a frozen-looking UI
             logger.exception("Local media server crashed")
+            if not server.started and startup_failed is not None:
+                startup_failed.set()
+                break
         finally:
             if server_state.get("server") is server:
                 server_state.pop("server", None)
@@ -195,17 +210,18 @@ def main() -> None:
 
     port = choose_local_port()
     stop_event = threading.Event()
+    startup_failed = threading.Event()
     server_state: dict[str, uvicorn.Server] = {}
     server_thread = threading.Thread(
         target=supervise_local_server,
-        args=(port, stop_event, server_state),
+        args=(port, stop_event, server_state, startup_failed),
         name="ytarchive-local-server-supervisor",
         daemon=False,
     )
     server_thread.start()
 
     try:
-        wait_until_listening(port)
+        wait_until_server_ready(port, startup_failed)
         logger.info("Desktop app started on http://%s:%d", HOST, port)
         open_desktop_window(f"http://{HOST}:{port}")
     finally:

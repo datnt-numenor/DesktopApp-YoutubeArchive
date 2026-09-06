@@ -15,6 +15,21 @@
                 Windows Task Scheduler: <strong>{{ scheduled_sync.state }}</strong>
                 {% if scheduled_sync.next_run_time %}| Next run: {{ scheduled_sync.next_run_time }}{% endif %}
             </div>
+            <div class="small text-muted mt-2">
+                {% if scheduled_sync.last_run_time %}Last task run: {{ scheduled_sync.last_run_time }}{% else %}No task run recorded{% endif %}
+                {% if scheduled_sync.last_task_result_hex %}| Result: {{ scheduled_sync.last_task_result_hex }}{% endif %}
+            </div>
+            <div class="small text-muted mt-2">
+                Wake from sleep: <strong>{{ 'On' if scheduled_sync.wake_to_run else 'Off' }}</strong>
+                | AC power required: <strong>{{ 'Yes' if scheduled_sync.disallow_start_if_on_batteries else 'No' }}</strong>
+                | Run when available: <strong>{{ 'On' if scheduled_sync.start_when_available else 'Off' }}</strong>
+            </div>
+            {% if scheduled_sync.last_task_result and scheduled_sync.last_task_result != 0 %}
+            <div class="download-error mt-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                The last Windows task returned {{ scheduled_sync.last_task_result_hex }}. Check the sync result below.
+            </div>
+            {% endif %}
             {% else %}
             <div class="download-error mt-2">
                 <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or 'Windows scheduled sync is not installed.' }}
@@ -24,6 +39,35 @@
                 <i class="bi bi-save me-1"></i>Save
             </button>
         </form>
+    </div>
+</section>
+
+<section class="settings-summary mt-4">
+    <div class="panel">
+        <div class="panel-header compact">
+            <h2><i class="bi bi-arrow-repeat me-1"></i>Scheduled sync health</h2>
+            <p>The durable result remains available even if Windows hides a notification.</p>
+        </div>
+        {% if scheduled_sync and scheduled_sync.sync_status %}
+        <div class="quota-grid">
+            <div>
+                <span class="metric-label">Last result</span>
+                <strong>{{ scheduled_sync.sync_status|upper }}</strong>
+                <small>{{ scheduled_sync.sync_finished_at or 'In progress' }}</small>
+            </div>
+            <div>
+                <span class="metric-label">Summary</span>
+                <strong>{{ scheduled_sync.sync_summary or 'No summary recorded' }}</strong>
+            </div>
+        </div>
+        {% if scheduled_sync.sync_error %}
+        <div class="download-error mt-3">
+            <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync.sync_error }}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="small text-muted">No scheduled sync result has been recorded yet.</div>
+        {% endif %}
     </div>
 </section>
 

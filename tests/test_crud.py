@@ -466,6 +466,27 @@ async def test_cleanup_sync_history_removes_entries_older_than_30_days(session) 
     assert (await session.execute(select(SyncRun))).scalars().all() == []
 
 
+async def test_cleanup_sync_history_recovers_stale_running_rows_with_sqlite_datetimes(session) -> None:
+    owner = User(email="stale-history@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="stale-list", title="Stale", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    run = await crud.create_sync_run(session, playlist, owner.id, "scheduled")
+    run_id = run.id
+    run.started_at = datetime.now(timezone.utc) - timedelta(hours=7)
+    await session.commit()
+
+    recovered = await crud.cleanup_sync_history(session)
+
+    session.expire_all()
+    refreshed = (await session.execute(select(SyncRun).where(SyncRun.id == run_id))).scalar_one()
+    assert recovered == 1
+    assert refreshed.status == SyncRunStatus.FAILED
+    assert refreshed.error == "Sync process stopped before completion"
+    assert refreshed.finished_at is not None
+    assert await crud.cleanup_sync_history(session) == 0
+
+
 async def test_scheduled_history_filters_source_owner_status_playlist_and_paginates(session) -> None:
     owner = User(email="scheduled-history@example.com")
     other = User(email="other-scheduled-history@example.com")

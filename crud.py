@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1097,22 +1097,35 @@ async def get_scheduled_sync_history(
     }
 
 
-async def cleanup_sync_history(session: AsyncSession, retention_days: int = 30) -> None:
+async def cleanup_sync_history(session: AsyncSession, retention_days: int = 30) -> int:
     now = datetime.now(timezone.utc)
     stale_running_cutoff = now - timedelta(hours=6)
     stale_result = await session.execute(
-        select(SyncRun).where(
+        update(SyncRun)
+        .where(
             SyncRun.status == SyncRunStatus.RUNNING,
             SyncRun.started_at < stale_running_cutoff,
         )
+        .values(
+            status=SyncRunStatus.FAILED,
+            error=func.coalesce(SyncRun.error, "Sync process stopped before completion"),
+            finished_at=now,
+        )
+        .execution_options(synchronize_session=False)
     )
-    for run in stale_result.scalars():
-        run.status = SyncRunStatus.FAILED
-        run.error = run.error or "Sync process stopped before completion"
-        run.finished_at = now
+    recovered_count = int(stale_result.rowcount or 0)
 
     cutoff = now - timedelta(days=retention_days)
     old_run_ids = select(SyncRun.id).where(SyncRun.started_at < cutoff)
-    await session.execute(delete(SyncEvent).where(SyncEvent.sync_run_id.in_(old_run_ids)))
-    await session.execute(delete(SyncRun).where(SyncRun.started_at < cutoff))
+    await session.execute(
+        delete(SyncEvent)
+        .where(SyncEvent.sync_run_id.in_(old_run_ids))
+        .execution_options(synchronize_session=False)
+    )
+    await session.execute(
+        delete(SyncRun)
+        .where(SyncRun.started_at < cutoff)
+        .execution_options(synchronize_session=False)
+    )
     await session.commit()
+    return recovered_count

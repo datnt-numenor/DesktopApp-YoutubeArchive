@@ -30,6 +30,8 @@ Mặc định, toàn bộ dữ liệu riêng của ứng dụng nằm trong:
 ```text
 data/
 |-- ytarchive.db
+|-- scheduled-sync-state.json
+|-- logs/scheduled-sync.log
 |-- tools/yt-dlp.exe
 `-- downloads/
 ```
@@ -64,6 +66,7 @@ Sau đó chạy PowerShell trong thư mục project:
 Lần chạy đầu script sẽ tạo `.venv`, cài dependencies, sao chép `.env.example`
 thành `.env`, sau đó yêu cầu đặt mật khẩu và mở ứng dụng trong một cửa sổ desktop. Web server nội bộ
 chỉ lắng nghe trên `127.0.0.1`; máy khác trong mạng không thể truy cập.
+Các lần mở sau sẽ bỏ qua bước cài dependencies, trừ khi `requirements.txt` thay đổi.
 
 Nếu Windows chặn PowerShell script, có thể chạy thủ công:
 
@@ -83,8 +86,12 @@ Sau khi đã chạy ứng dụng ít nhất một lần và tạo `.venv`, cài 
 ```
 
 Task Scheduler chỉ xử lý những playlist YouTube đang bật Auto-sync và luôn tải MP3.
-Playlist thủ công không được đồng bộ với nguồn bên ngoài. Có thể đổi giờ trực tiếp
-trong Settings hoặc gỡ lịch bằng:
+Playlist thủ công không được đồng bộ với nguồn bên ngoài. Task sẽ đánh thức máy
+đang sleep khi cắm sạc; nếu máy đang tắt hoặc chưa đăng nhập, `StartWhenAvailable`
+sẽ chạy bù sau khi đăng nhập. Kết quả gần nhất, mã Task Scheduler và điều kiện nguồn
+điện được hiển thị trong Settings. Lỗi được lưu trong `data/logs/scheduled-sync.log`
+và `data/scheduled-sync-state.json`, đồng thời có thông báo Windows chống lặp trong
+6 giờ. Có thể đổi giờ trực tiếp trong Settings hoặc gỡ lịch bằng:
 
 ```powershell
 .\scripts\uninstall-scheduled-sync.ps1

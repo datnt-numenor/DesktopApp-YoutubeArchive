@@ -2,6 +2,8 @@ import socket
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 import desktop
 
 
@@ -48,6 +50,37 @@ def test_server_supervisor_restarts_after_unexpected_exit(monkeypatch) -> None:
 
     assert len(servers) == 2
     assert server_state == {}
+
+
+def test_server_supervisor_stops_after_application_startup_failure(monkeypatch) -> None:
+    stop_event = threading.Event()
+    startup_failed = threading.Event()
+    server_state = {}
+    servers = []
+
+    class FakeServer:
+        should_exit = False
+        started = False
+
+        def run(self) -> None:
+            servers.append(self)
+            raise SystemExit(3)
+
+    monkeypatch.setattr(desktop, "create_local_server", lambda _port: FakeServer())
+
+    desktop.supervise_local_server(8765, stop_event, server_state, startup_failed, restart_delay_seconds=0)
+
+    assert len(servers) == 1
+    assert startup_failed.is_set()
+    assert server_state == {}
+
+
+def test_wait_until_server_ready_reports_startup_failure_immediately() -> None:
+    startup_failed = threading.Event()
+    startup_failed.set()
+
+    with pytest.raises(RuntimeError, match="failed during startup"):
+        desktop.wait_until_server_ready(8765, startup_failed)
 
 
 class FakeLoadedEvent:

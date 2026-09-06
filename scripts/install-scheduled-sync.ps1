@@ -23,6 +23,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At $Time
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
+    -WakeToRun `
     -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Hours 6) `
@@ -35,8 +36,8 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description "Sync enabled YouTube Archive playlists and download new MP3 files every day at 12:00." `
+    -Description "Sync enabled YouTube Archive playlists and download new MP3 files every day at $Time." `
     -Force | Out-Null
 
 Write-Output "Installed task: $taskName"
-Write-Output "Schedule: daily at $Time, starts only on AC power, runs when the user is logged on."
+Write-Output "Schedule: daily at $Time, wakes on AC power, and runs when the user is logged on."

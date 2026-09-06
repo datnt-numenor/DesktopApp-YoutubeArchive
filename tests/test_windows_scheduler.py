@@ -19,8 +19,23 @@ def test_sync_schedule_request_validates_24_hour_time() -> None:
 def test_get_scheduled_sync_info_parses_powershell_json(monkeypatch) -> None:
     monkeypatch.setattr(
         windows_scheduler,
+        "read_scheduled_sync_state",
+        lambda: {
+            "status": "partial",
+            "summary": "1 succeeded, 1 failed",
+            "error": "HTTP 403",
+            "finished_at": "2026-09-06T05:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        windows_scheduler,
         "_run_script",
-        lambda *_args: '{"time":"12:00","state":"Ready","next_run_time":"2026-08-06 12:00"}',
+        lambda *_args: (
+            '{"time":"12:00","state":"Ready","next_run_time":"2026-08-06 12:00",'
+            '"last_run_time":"2026-08-05 12:00:01","last_task_result":1,'
+            '"last_task_result_hex":"0x00000001","wake_to_run":true,'
+            '"disallow_start_if_on_batteries":true,"start_when_available":true}'
+        ),
     )
 
     info = windows_scheduler.get_scheduled_sync_info()
@@ -28,6 +43,13 @@ def test_get_scheduled_sync_info_parses_powershell_json(monkeypatch) -> None:
     assert info.time == "12:00"
     assert info.state == "Ready"
     assert info.next_run_time == "2026-08-06 12:00"
+    assert info.last_run_time == "2026-08-05 12:00:01"
+    assert info.last_task_result_hex == "0x00000001"
+    assert info.wake_to_run is True
+    assert info.disallow_start_if_on_batteries is True
+    assert info.start_when_available is True
+    assert info.sync_status == "partial"
+    assert info.sync_error == "HTTP 403"
 
 
 def test_set_scheduled_sync_time_updates_then_reads_task(monkeypatch) -> None:

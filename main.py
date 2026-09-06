@@ -93,7 +93,11 @@ if settings.sentry_dsn and sentry_sdk:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await init_db()
     async with AsyncSessionLocal() as cleanup_session:
-        await crud.cleanup_sync_history(cleanup_session)
+        try:
+            await crud.cleanup_sync_history(cleanup_session)
+        except Exception:  # noqa: BLE001 - maintenance must not prevent the desktop app from opening
+            await cleanup_session.rollback()
+            logger.exception("Could not clean sync history during startup; continuing")
         if settings.resolved_storage_backend == "local":
             users = list((await cleanup_session.execute(select(User))).scalars().all())
             for user in users:
