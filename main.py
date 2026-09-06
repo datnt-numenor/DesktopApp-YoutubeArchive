@@ -47,6 +47,7 @@ from database import AsyncSessionLocal, get_session, init_db
 from downloader import canonicalize_playlist_url, extract_playlist_id_from_url
 from mailer import send_email
 from media_import import receive_mp3_upload
+from managed_ytdlp import get_ytdlp_status
 from models import Playlist, PlaylistSource, PlaylistVideo, SyncRunStatus, User, Video
 from scheduler import scheduler, shutdown_scheduler, start_scheduler
 from schemas import (
@@ -61,6 +62,7 @@ from schemas import (
     SyncRequest,
     TaskResponse,
     TaskStatusResponse,
+    YtDlpStatusResponse,
     YoutubeVideosAddRequest,
 )
 from storage import storage
@@ -81,7 +83,7 @@ except ImportError:  # pragma: no cover - optional production dependency
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20260816-playback-recovery"
+ASSET_VERSION = "20260831-ytdlp-status"
 
 if settings.sentry_dsn and sentry_sdk:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment)
@@ -792,6 +794,7 @@ async def settings_page(
         scheduled_sync = await asyncio.to_thread(get_scheduled_sync_info)
     except WindowsSchedulerError as exc:
         scheduled_sync_error = str(exc)
+    yt_dlp_status_info = await asyncio.to_thread(get_ytdlp_status)
     return render_template(
         request,
         "settings.html",
@@ -801,6 +804,7 @@ async def settings_page(
             "user": current_user,
             "scheduled_sync": scheduled_sync,
             "scheduled_sync_error": scheduled_sync_error,
+            "yt_dlp_status": yt_dlp_status_info,
             "storage_percent": storage_percent,
             "topbar_stats": topbar_stats,
             "playlist_quota": current_user.playlist_quota,
@@ -808,6 +812,16 @@ async def settings_page(
             "email_verification_required": settings.email_verification_required,
         },
     )
+
+
+@app.get("/api/yt-dlp/status", response_model=YtDlpStatusResponse)
+@limiter.limit("60/minute")
+async def yt_dlp_status(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> YtDlpStatusResponse:
+    del request, current_user
+    return YtDlpStatusResponse(**await asyncio.to_thread(get_ytdlp_status))
 
 
 @app.get("/admin")

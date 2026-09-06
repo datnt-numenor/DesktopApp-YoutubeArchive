@@ -16,6 +16,7 @@ from main import (
     update_desktop_password,
     update_playlist_auto_sync,
     update_sync_schedule,
+    yt_dlp_status,
 )
 from models import Playlist, PlaylistVideo, User, Video, VideoStatus
 from schemas import (
@@ -58,6 +59,27 @@ async def test_active_tasks_endpoint_logic_returns_only_current_user_tasks() -> 
     assert len(response) == 1
     assert response[0].task_id == current.task_id
     assert response[0].playlist_id == 1
+
+
+async def test_ytdlp_status_endpoint_returns_local_updater_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "get_ytdlp_status",
+        lambda: {
+            "installed_version": "2026.08.19",
+            "previous_version": "2026.07.04",
+            "last_attempt_at": "2026-08-27T15:19:47+00:00",
+            "last_successful_check_at": "2026-08-27T15:19:52+00:00",
+            "last_updated_at": "2026-08-27T15:19:50+00:00",
+            "last_error": None,
+        },
+    )
+
+    response = await yt_dlp_status.__wrapped__(request=None, current_user=SimpleNamespace(id="owner-1"))
+
+    assert response.installed_version == "2026.08.19"
+    assert response.previous_version == "2026.07.04"
+    assert response.last_error is None
 
 
 async def test_soft_hide_and_restore_endpoints_keep_association(session) -> None:

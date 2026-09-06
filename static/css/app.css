@@ -1934,6 +1934,10 @@ a:hover {
     min-width: min(440px, 100%);
 }
 
+.yt-dlp-status-grid strong {
+    overflow-wrap: anywhere;
+}
+
 .auth-shell {
     display: grid;
     min-height: calc(100vh - 140px);

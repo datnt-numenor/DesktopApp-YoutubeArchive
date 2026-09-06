@@ -28,6 +28,37 @@
 </section>
 
 <section class="settings-summary mt-4">
+    <div class="panel" id="ytDlpStatusPanel">
+        <div class="panel-header compact">
+            <h2><i class="bi bi-cloud-arrow-down me-1"></i>yt-dlp updater</h2>
+            <p>The app checks the official release weekly and keeps the working version if an update fails.</p>
+        </div>
+        <div class="quota-grid yt-dlp-status-grid">
+            <div>
+                <span class="metric-label">Installed version</span>
+                <strong id="ytDlpInstalledVersion">{{ yt_dlp_status.installed_version or 'Not installed' }}</strong>
+                <small id="ytDlpPreviousVersion">
+                    {% if yt_dlp_status.previous_version %}Previous: {{ yt_dlp_status.previous_version }}{% else %}No previous version recorded{% endif %}
+                </small>
+            </div>
+            <div>
+                <span class="metric-label">Update status</span>
+                <strong id="ytDlpUpdateResult">{{ 'Update check failed' if yt_dlp_status.last_error else 'Ready' }}</strong>
+                <small id="ytDlpLastCheck">
+                    {% if yt_dlp_status.last_successful_check_at %}Last successful check: {{ yt_dlp_status.last_successful_check_at }}{% else %}Not checked yet{% endif %}
+                </small>
+            </div>
+        </div>
+        <div class="small text-muted mt-3" id="ytDlpLastUpdated">
+            {% if yt_dlp_status.last_updated_at %}Last updated: {{ yt_dlp_status.last_updated_at }}{% else %}No completed update recorded yet.{% endif %}
+        </div>
+        <div class="download-error mt-2 {{ 'd-none' if not yt_dlp_status.last_error else '' }}" id="ytDlpUpdateError">
+            <i class="bi bi-exclamation-triangle me-1"></i><span>{{ yt_dlp_status.last_error or '' }}</span>
+        </div>
+    </div>
+</section>
+
+<section class="settings-summary mt-4">
     <div class="panel">
         <div class="panel-header compact">
             <h2>Change password</h2>

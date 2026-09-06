@@ -66,6 +66,71 @@ async function requestJson(url, options = {}) {
     return data;
 }
 
+const YTDLP_VERSION_STORAGE_KEY = "ytarchiveYtDlpVersion";
+let ytDlpStatusRefreshing = false;
+
+function formatLocalTimestamp(value) {
+    if (!value) return null;
+    const timestamp = new Date(value);
+    if (Number.isNaN(timestamp.getTime())) return value;
+    return timestamp.toLocaleString("vi-VN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+
+function renderYtDlpStatus(status) {
+    const version = document.getElementById("ytDlpInstalledVersion");
+    const previous = document.getElementById("ytDlpPreviousVersion");
+    const result = document.getElementById("ytDlpUpdateResult");
+    const lastCheck = document.getElementById("ytDlpLastCheck");
+    const lastUpdated = document.getElementById("ytDlpLastUpdated");
+    const error = document.getElementById("ytDlpUpdateError");
+    if (!version) return;
+
+    version.textContent = status.installed_version || "Not installed";
+    previous.textContent = status.previous_version
+        ? `Previous: ${status.previous_version}`
+        : "No previous version recorded";
+    result.textContent = status.last_error ? "Update check failed" : "Ready";
+    lastCheck.textContent = status.last_successful_check_at
+        ? `Last successful check: ${formatLocalTimestamp(status.last_successful_check_at)}`
+        : "Not checked yet";
+    lastUpdated.textContent = status.last_updated_at
+        ? `Last updated: ${formatLocalTimestamp(status.last_updated_at)}`
+        : "No completed update recorded yet.";
+    if (status.last_error) {
+        error.querySelector("span").textContent = status.last_error;
+        error.classList.remove("d-none");
+    } else {
+        error.classList.add("d-none");
+    }
+}
+
+async function refreshYtDlpStatus() {
+    if (!hasAuthenticatedShell() || ytDlpStatusRefreshing || isLoggingOut) return null;
+    ytDlpStatusRefreshing = true;
+    try {
+        const status = await requestJson("/api/yt-dlp/status", { timeoutMs: 3000 });
+        renderYtDlpStatus(status);
+        const currentVersion = status.installed_version;
+        const previousSeenVersion = window.localStorage.getItem(YTDLP_VERSION_STORAGE_KEY);
+        if (currentVersion && previousSeenVersion && currentVersion !== previousSeenVersion) {
+            showToast(`yt-dlp updated: ${escapeHtml(previousSeenVersion)} → ${escapeHtml(currentVersion)}`);
+        }
+        if (currentVersion) window.localStorage.setItem(YTDLP_VERSION_STORAGE_KEY, currentVersion);
+        return status;
+    } catch (error) {
+        console.warn("Unable to refresh yt-dlp status", error);
+        return null;
+    } finally {
+        ytDlpStatusRefreshing = false;
+    }
+}
+
 async function uploadMp3File(playlistId, file) {
     const csrfCookieName = document.querySelector('meta[name="csrf-cookie-name"]')?.content || "ytarchive_csrf";
     const csrfHeaderName = document.querySelector('meta[name="csrf-header-name"]')?.content || "x-csrf-token";
@@ -416,6 +481,7 @@ async function pollTask(taskId) {
                 window.setTimeout(() => refreshCurrentPage(), 700);
             }
             done = true;
+            refreshYtDlpStatus();
         } else if (task.status === "failed") {
             showToast(task.error || "Sync failed", "danger");
             done = true;
@@ -1445,4 +1511,6 @@ document.addEventListener("DOMContentLoaded", () => {
     scheduleNavigationPrefetch();
     scheduleActiveDownloadsRefresh(1000);
     scheduleActiveDownloadsPoll(2500);
+    refreshYtDlpStatus();
+    window.setInterval(refreshYtDlpStatus, 5 * 60 * 1000);
 });

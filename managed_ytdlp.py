@@ -65,6 +65,27 @@ def _write_state(state: dict[str, Any]) -> None:
     temporary.replace(YTDLP_STATE_PATH)
 
 
+def get_ytdlp_status() -> dict[str, str | None]:
+    """Return locally recorded updater status without contacting GitHub."""
+    state = _read_state()
+    installed_version = state.get("installed_version")
+    if not installed_version and YTDLP_PATH.is_file():
+        installed_version = _executable_version(YTDLP_PATH)
+
+    def optional_text(key: str) -> str | None:
+        value = state.get(key)
+        return str(value) if value not in (None, "") else None
+
+    return {
+        "installed_version": str(installed_version) if installed_version else None,
+        "previous_version": optional_text("previous_version"),
+        "last_attempt_at": optional_text("last_attempt_at"),
+        "last_successful_check_at": optional_text("last_successful_check_at"),
+        "last_updated_at": optional_text("last_updated_at"),
+        "last_error": optional_text("last_error"),
+    }
+
+
 def _request_bytes(url: str) -> bytes:
     request = Request(
         url,
@@ -229,9 +250,16 @@ def ensure_ytdlp_binary(*, force_update: bool = False) -> Path:
         attempted_at = _utc_now().isoformat()
         try:
             latest_version, executable_url, checksums_url = _latest_release()
+            previous_version = installed_version
             if installed_version != latest_version:
                 installed_version = _install_release(latest_version, executable_url, checksums_url)
                 logger.info("Installed yt-dlp %s", installed_version)
+                state.update(
+                    {
+                        "previous_version": previous_version,
+                        "last_updated_at": _utc_now().isoformat(),
+                    }
+                )
             state.update(
                 {
                     "installed_version": installed_version,

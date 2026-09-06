@@ -88,6 +88,15 @@ class TaskStatusResponse(BaseModel):
     errors: list[TaskErrorSchema] = Field(default_factory=list)
 
 
+class YtDlpStatusResponse(BaseModel):
+    installed_version: str | None = None
+    previous_version: str | None = None
+    last_attempt_at: str | None = None
+    last_successful_check_at: str | None = None
+    last_updated_at: str | None = None
+    last_error: str | None = None
+
+
 class VideoSchema(BaseModel):
     id: int
     yt_video_id: str

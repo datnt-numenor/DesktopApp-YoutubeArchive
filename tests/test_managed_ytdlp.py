@@ -41,7 +41,48 @@ def test_managed_binary_is_downloaded_and_checksum_verified(monkeypatch, tmp_pat
     assert result.read_bytes() == payload
     state = managed_ytdlp._read_state()
     assert state["installed_version"] == "2026.08.19"
+    assert state["last_updated_at"]
+    assert state["previous_version"] is None
     assert state["last_error"] is None
+
+
+def test_successful_update_records_previous_version_and_time(monkeypatch, tmp_path: Path) -> None:
+    configure_tool_paths(monkeypatch, tmp_path)
+    managed_ytdlp.YTDLP_PATH.write_bytes(b"old executable")
+    monkeypatch.setattr(managed_ytdlp, "_executable_version", lambda _path: "2026.07.04")
+    monkeypatch.setattr(
+        managed_ytdlp,
+        "_latest_release",
+        lambda: ("2026.08.19", "https://example.test/yt-dlp.exe", "https://example.test/SHA2-256SUMS"),
+    )
+    monkeypatch.setattr(managed_ytdlp, "_install_release", lambda *_args: "2026.08.19")
+
+    managed_ytdlp.ensure_ytdlp_binary(force_update=True)
+
+    state = managed_ytdlp._read_state()
+    assert state["installed_version"] == "2026.08.19"
+    assert state["previous_version"] == "2026.07.04"
+    assert state["last_updated_at"]
+
+
+def test_status_reads_recorded_updater_details_without_network(monkeypatch, tmp_path: Path) -> None:
+    configure_tool_paths(monkeypatch, tmp_path)
+    managed_ytdlp._write_state(
+        {
+            "installed_version": "2026.08.19",
+            "previous_version": "2026.07.04",
+            "last_successful_check_at": "2026-08-27T15:19:52+00:00",
+            "last_updated_at": "2026-08-27T15:19:50+00:00",
+            "last_error": None,
+        }
+    )
+
+    status = managed_ytdlp.get_ytdlp_status()
+
+    assert status["installed_version"] == "2026.08.19"
+    assert status["previous_version"] == "2026.07.04"
+    assert status["last_updated_at"] == "2026-08-27T15:19:50+00:00"
+    assert status["last_error"] is None
 
 
 def test_failed_update_keeps_existing_binary(monkeypatch, tmp_path: Path) -> None:
