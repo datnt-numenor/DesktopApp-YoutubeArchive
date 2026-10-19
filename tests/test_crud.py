@@ -19,6 +19,15 @@ from models import (
 )
 
 
+async def create_synced_playlist(session, owner: User, metadata: dict[str, object]) -> Playlist:
+    """Create a playlist the way the app does: a pending row, then a metadata sync."""
+    pending, _created = await crud.get_or_create_pending_playlist(
+        session, owner, yt_playlist_id=metadata["yt_playlist_id"], url=metadata["url"]
+    )
+    playlist = await crud.get_playlist_for_owner(session, pending.id, owner.id)
+    return await crud.sync_playlist_metadata(session, playlist, metadata)
+
+
 def sample_video(video_id: str, title: str = "Song") -> dict[str, object]:
     return {
         "yt_video_id": video_id,
@@ -84,7 +93,7 @@ async def test_available_metadata_restores_a_previously_deleted_video(session) -
     await session.commit()
     await session.refresh(owner)
 
-    playlist = await crud.upsert_playlist_from_metadata(
+    playlist = await create_synced_playlist(
         session,
         owner,
         {
@@ -107,7 +116,7 @@ async def test_unavailable_sync_preserves_archived_metadata_and_local_media(sess
     session.add(owner)
     await session.commit()
     await session.refresh(owner)
-    playlist = await crud.upsert_playlist_from_metadata(
+    playlist = await create_synced_playlist(
         session,
         owner,
         {

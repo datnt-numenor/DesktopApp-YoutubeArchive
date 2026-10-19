@@ -95,9 +95,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         except Exception:  # noqa: BLE001 - maintenance must not prevent the desktop app from opening
             await cleanup_session.rollback()
             logger.exception("Could not clean sync history during startup; continuing")
-        users = list((await cleanup_session.execute(select(User))).scalars().all())
-        for user in users:
-            await crud.recalculate_user_storage(cleanup_session, user, settings.downloads_dir.parent)
+        try:
+            users = list((await cleanup_session.execute(select(User))).scalars().all())
+            for user in users:
+                await crud.recalculate_user_storage(cleanup_session, user, settings.downloads_dir.parent)
+        except Exception:  # noqa: BLE001 - a stale usage figure must not keep the app from opening
+            await cleanup_session.rollback()
+            logger.exception("Could not recalculate storage usage during startup; continuing")
     # Automatic sync is owned by Windows Task Scheduler, which also runs while the app is closed.
     try:
         yield
@@ -561,7 +565,14 @@ async def list_orphaned_media(
     _current_user: User = Depends(get_current_user),
 ) -> OrphanedMediaResponse:
     orphans = await crud.find_orphaned_media_files(session, settings.downloads_dir.parent)
-    files = [OrphanedMediaFileSchema(name=_orphan_name(path), size_bytes=path.stat().st_size) for path in orphans]
+    files = []
+    for path in orphans:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            # Deleted or moved after the scan; it is no longer there to clean up.
+            continue
+        files.append(OrphanedMediaFileSchema(name=_orphan_name(path), size_bytes=size))
     return OrphanedMediaResponse(files=files, count=len(files), total_bytes=sum(item.size_bytes for item in files))
 
 
@@ -868,12 +879,8 @@ async def stream_video(
     current_user: User = Depends(get_current_user),
 ):
     media_path = await crud.get_download_path_for_video(session, current_user.id, video_id)
-    full_path = Path(await storage.get_file_url(media_path.as_posix()))
-    if not full_path.is_absolute():
-        full_path = BASE_DIR / full_path
-    if not full_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found on disk")
-    return FileResponse(full_path)
+    # get_file_url already returns 404 when the file is missing.
+    return FileResponse(await storage.get_file_url(media_path.as_posix()))
 
 
 @app.get("/thumbnail/{video_id}")

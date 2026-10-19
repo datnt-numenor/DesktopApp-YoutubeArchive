@@ -41,12 +41,14 @@ async def count_user_playlists(session: AsyncSession, owner_id: str) -> int:
 
 
 async def count_downloaded_media(session: AsyncSession, owner_id: str) -> int:
+    """Count distinct saved songs; one song in several playlists counts once, hidden-only songs not at all."""
     result = await session.execute(
-        select(func.count(PlaylistVideo.video_id))
+        select(func.count(func.distinct(PlaylistVideo.video_id)))
         .join(PlaylistVideo.playlist)
         .where(
             Playlist.owner_id == owner_id,
             PlaylistVideo.local_file_path.is_not(None),
+            PlaylistVideo.hidden_at.is_(None),
         )
     )
     return int(result.scalar_one())
@@ -251,9 +253,10 @@ async def add_library_videos_to_custom_playlist(
     if not sources:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No downloaded songs were selected")
 
+    existing_by_video_id = {association.video_id: association for association in playlist.playlist_videos}
     added = 0
     for video_id, source in sources.items():
-        target = await _get_playlist_video(session, playlist.id, video_id)
+        target = existing_by_video_id.get(video_id)
         if target:
             target.hidden_at = None
             if not target.local_file_path:
@@ -425,52 +428,6 @@ def _new_video_from_metadata(metadata: dict[str, Any]) -> Video:
             else VideoStatus.DELETED_ON_YT
         ),
     )
-
-
-async def upsert_playlist_from_metadata(session: AsyncSession, owner: User, metadata: dict[str, Any]) -> Playlist:
-    result = await session.execute(
-        select(Playlist).where(
-            Playlist.owner_id == owner.id,
-            Playlist.yt_playlist_id == metadata["yt_playlist_id"],
-        )
-    )
-    playlist = result.scalar_one_or_none()
-    if not playlist:
-        total = await count_user_playlists(session, owner.id)
-        if total >= owner.playlist_quota:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Playlist quota exceeded")
-        playlist = Playlist(
-            owner_id=owner.id,
-            yt_playlist_id=metadata["yt_playlist_id"],
-            title=metadata["title"],
-            url=metadata["url"],
-        )
-        session.add(playlist)
-        await session.flush()
-    else:
-        playlist.title = metadata["title"]
-        playlist.url = metadata["url"]
-
-    for video_data in metadata["videos"]:
-        video = await _get_video_by_youtube_id(session, video_data["yt_video_id"])
-        if not video:
-            video = _new_video_from_metadata(video_data)
-            session.add(video)
-            await session.flush()
-        else:
-            _apply_video_metadata(video, video_data)
-            if not video_data.get("is_available_on_youtube", True):
-                video.status = VideoStatus.DELETED_ON_YT
-            elif video.status == VideoStatus.DELETED_ON_YT:
-                video.status = VideoStatus.AVAILABLE
-
-        association = await _get_playlist_video(session, playlist.id, video.id)
-        if not association:
-            session.add(PlaylistVideo(playlist_id=playlist.id, video_id=video.id))
-
-    await session.commit()
-    await session.refresh(playlist)
-    return playlist
 
 
 async def get_or_create_pending_playlist(
