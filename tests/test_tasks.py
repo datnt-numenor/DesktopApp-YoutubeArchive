@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import IntegrityError
 
 import tasks
 import crud
@@ -407,3 +408,100 @@ async def test_closing_the_app_stops_sync_without_marking_videos_failed(session,
     assert history["runs"][0]["status"] == "FAILED"
     assert history["runs"][0]["failed_count"] == 0
     assert all(association.download_error is None for association in playlist.playlist_videos)
+
+
+def _conflict_once(monkeypatch) -> list[int]:
+    real_sync_metadata = crud.sync_playlist_metadata
+    calls: list[int] = []
+
+    async def flaky_sync_metadata(*args, **kwargs):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            raise IntegrityError("INSERT INTO videos", {}, Exception("UNIQUE constraint failed: videos.yt_video_id"))
+        return await real_sync_metadata(*args, **kwargs)
+
+    monkeypatch.setattr(tasks.crud, "sync_playlist_metadata", flaky_sync_metadata)
+    return calls
+
+
+async def test_metadata_import_retries_after_a_concurrent_insert(session, monkeypatch) -> None:
+    owner = User(email="retry-import@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="retry-import", title="Importing", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+
+    async def fake_extract(_url):
+        return {"title": "Imported", "url": "https://example.com", "videos": [{"yt_video_id": "shared", "title": "Shared"}]}
+
+    async def fake_cache(*_args):
+        return None
+
+    monkeypatch.setattr(tasks, "extract_playlist_metadata", fake_extract)
+    monkeypatch.setattr(tasks, "_cache_metadata_thumbnails", fake_cache)
+    calls = _conflict_once(monkeypatch)
+
+    playlist_id, owner_id = playlist.id, owner.id
+
+    await tasks.import_playlist_metadata(session, playlist)
+    reloaded = await crud.get_playlist_for_owner(session, playlist_id, owner_id)
+
+    assert calls == [1, 2]
+    assert reloaded.title == "Imported"
+    assert [association.video.yt_video_id for association in reloaded.playlist_videos] == ["shared"]
+
+
+async def test_sync_keeps_history_and_owner_usable_after_a_metadata_retry(session, monkeypatch, tmp_path) -> None:
+    owner = User(email="retry-sync@example.com", storage_quota_bytes=1024 * 1024)
+    playlist = Playlist(owner=owner, yt_playlist_id="retry-sync", title="Sync", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+    downloaded = tmp_path / "shared-sync.mp3"
+
+    async def fake_extract(_url):
+        return {"title": "Sync", "url": "https://example.com", "videos": [{"yt_video_id": "shared-sync", "title": "Song"}]}
+
+    async def fake_cache(*_args):
+        return None
+
+    async def fake_download(_video_id, _output_dir):
+        downloaded.write_bytes(b"mp3")
+        return downloaded
+
+    async def fake_upload(_path, _key):
+        return "downloads/shared-sync.mp3"
+
+    monkeypatch.setattr(tasks, "extract_playlist_metadata", fake_extract)
+    monkeypatch.setattr(tasks, "_cache_metadata_thumbnails", fake_cache)
+    monkeypatch.setattr(tasks, "download_video", fake_download)
+    monkeypatch.setattr(tasks.storage, "upload_file", fake_upload)
+    monkeypatch.setattr(tasks.settings, "downloads_dir", tmp_path)
+    calls = _conflict_once(monkeypatch)
+
+    await tasks.sync_playlist(session, playlist, owner, "mp3", history_source="manual")
+    history = await crud.get_today_sync_history(session, owner.id)
+
+    assert calls == [1, 2]
+    assert history["runs"][0]["status"] == "COMPLETED"
+    assert history["downloaded_count"] == 1
+
+
+async def test_metadata_write_gives_up_after_repeated_conflicts(session, monkeypatch) -> None:
+    owner = User(email="retry-give-up@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="retry-give-up", title="Stuck", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+    attempts = []
+
+    async def always_conflicts(*_args, **_kwargs):
+        attempts.append(True)
+        raise IntegrityError("INSERT INTO videos", {}, Exception("UNIQUE constraint failed"))
+
+    monkeypatch.setattr(tasks.crud, "sync_playlist_metadata", always_conflicts)
+
+    with pytest.raises(IntegrityError):
+        await tasks._write_playlist_metadata(session, playlist, {"title": "x", "url": "y", "videos": []})
+
+    assert len(attempts) == tasks.METADATA_WRITE_ATTEMPTS

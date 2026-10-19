@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,7 +23,7 @@ from downloader import (
     extract_playlist_metadata,
     extract_video_metadata,
 )
-from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User
+from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User, Video
 from storage import storage
 from sync_lock import SyncAlreadyRunning, sync_process_lock
 
@@ -32,6 +33,7 @@ TaskState = Literal["queued", "running", "done", "failed"]
 ACTIVE_TASK_STATES = {"queued", "running"}
 METADATA_IMPORT_FORMAT = "metadata"
 FINISHED_TASK_RETENTION = timedelta(hours=1)
+METADATA_WRITE_ATTEMPTS = 3
 PROCESS_LOCK_RETRY_SECONDS = 15.0
 PROCESS_LOCK_MAX_WAIT_SECONDS = 6 * 60 * 60.0
 
@@ -216,6 +218,49 @@ def _update_task(
     _save_task(task)
 
 
+async def _write_playlist_metadata(
+    session: AsyncSession,
+    playlist: Playlist,
+    metadata: dict[str, Any],
+    *,
+    missing_video_availability: dict[str, dict[str, Any]] | None = None,
+    refresh_after_rollback: list[Any] | None = None,
+) -> tuple[Playlist, list[Video]]:
+    """Save playlist metadata, retrying when another writer inserted the same video first.
+
+    Metadata imports run outside the download queue, and the scheduled sync is a separate
+    process, so two sessions can both try to INSERT a video that neither saw. The loser gets an
+    IntegrityError; after a rollback the row exists and a retry simply updates it.
+    """
+    playlist_id, owner_id = playlist.id, playlist.owner_id
+    for attempt in range(1, METADATA_WRITE_ATTEMPTS + 1):
+        newly_unavailable: list[Video] = []
+        try:
+            playlist = await crud.sync_playlist_metadata(
+                session,
+                playlist,
+                metadata,
+                newly_unavailable=newly_unavailable,
+                missing_video_availability=missing_video_availability,
+            )
+            return playlist, newly_unavailable
+        except IntegrityError:
+            await session.rollback()
+            if attempt == METADATA_WRITE_ATTEMPTS:
+                raise
+            logger.warning(
+                "Playlist %s metadata conflicted with a concurrent write; retrying (%d/%d)",
+                playlist_id,
+                attempt,
+                METADATA_WRITE_ATTEMPTS,
+            )
+            # The rollback expired every loaded object; reload what the caller keeps using.
+            for instance in refresh_after_rollback or []:
+                await session.refresh(instance)
+            playlist = await crud.get_playlist_for_owner(session, playlist_id, owner_id)
+    raise AssertionError("unreachable")
+
+
 async def sync_playlist(
     session: AsyncSession,
     playlist: Playlist,
@@ -235,13 +280,12 @@ async def sync_playlist(
     try:
         metadata = await extract_playlist_metadata(playlist.url)
         missing_video_availability = await _probe_missing_playlist_videos(playlist, metadata)
-        newly_unavailable = []
-        playlist = await crud.sync_playlist_metadata(
+        playlist, newly_unavailable = await _write_playlist_metadata(
             session,
             playlist,
             metadata,
-            newly_unavailable=newly_unavailable,
             missing_video_availability=missing_video_availability,
+            refresh_after_rollback=[history_run, owner],
         )
         for video in newly_unavailable:
             await crud.record_sync_event(session, history_run, video, SyncEventType.UNAVAILABLE)
@@ -498,7 +542,7 @@ async def import_playlist_metadata(session: AsyncSession, playlist: Playlist, ta
         _update_task(task_id, status="running", progress=5, current_video="Reading playlist metadata")
 
     metadata = await extract_playlist_metadata(playlist.url)
-    await crud.sync_playlist_metadata(session, playlist, metadata)
+    await _write_playlist_metadata(session, playlist, metadata)
     await _cache_metadata_thumbnails(session, metadata)
     video_count = len(metadata.get("videos") or [])
     if task_id:
