@@ -14,7 +14,14 @@ from sqlalchemy.orm import selectinload
 import crud
 from config import BASE_DIR, settings
 from database import AsyncSessionLocal
-from downloader import DownloaderError, cache_thumbnail, download_video, extract_playlist_metadata, extract_video_metadata
+from downloader import (
+    DownloadCancelled,
+    DownloaderError,
+    cache_thumbnail,
+    download_video,
+    extract_playlist_metadata,
+    extract_video_metadata,
+)
 from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User
 from storage import storage
 from sync_lock import SyncAlreadyRunning, sync_process_lock
@@ -325,6 +332,9 @@ async def sync_playlist(
                 await crud.mark_video_downloaded(session, association, object_key, "mp3", storage_increment, owner)
                 await crud.record_sync_event(session, history_run, association.video, SyncEventType.DOWNLOADED)
                 completed += 1
+            except DownloadCancelled:
+                # Closing the app is not a failure of this video; stop the whole run instead.
+                raise
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 message = str(exc) or exc.__class__.__name__
@@ -425,6 +435,9 @@ async def import_custom_youtube_videos_by_id(
                 await crud.mark_video_downloaded(session, association, object_key, "mp3", storage_increment, owner)
                 await crud.record_sync_event(session, history_run, association.video, SyncEventType.DOWNLOADED)
                 completed += 1
+            except DownloadCancelled:
+                # Closing the app is not a failure of this video; stop the whole run instead.
+                raise
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 message = str(exc) or exc.__class__.__name__

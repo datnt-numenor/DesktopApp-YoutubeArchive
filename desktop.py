@@ -17,6 +17,7 @@ import uvicorn
 import webview
 
 from config import LOCAL_DATA_DIR
+from downloader import request_download_shutdown
 from main import app
 
 
@@ -220,6 +221,8 @@ def main() -> None:
         open_desktop_window(f"http://{HOST}:{port}")
     finally:
         stop_event.set()
+        # Stop yt-dlp first so the server's worker threads can finish within the join timeout.
+        request_download_shutdown()
         server = server_state.get("server")
         if server is not None:
             server.should_exit = True

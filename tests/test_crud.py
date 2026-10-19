@@ -674,3 +674,21 @@ async def test_video_readded_to_playlist_clears_removed_marker(session) -> None:
     detail = await crud.get_playlist_detail(session, playlist.id, owner.id)
 
     assert detail.videos[0].is_removed_from_youtube_playlist is False
+
+
+async def test_app_start_closes_only_interrupted_app_sync_runs(session) -> None:
+    owner = User(email="interrupted@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="interrupted", title="Interrupted", url="https://example.com")
+    session.add_all([owner, playlist])
+    await session.commit()
+    manual = await crud.create_sync_run(session, playlist, owner.id, "manual")
+    scheduled = await crud.create_sync_run(session, playlist, owner.id, "scheduled")
+
+    closed = await crud.fail_interrupted_app_sync_runs(session)
+    await session.refresh(manual)
+    await session.refresh(scheduled)
+
+    assert closed == 1
+    assert manual.status == SyncRunStatus.FAILED
+    assert manual.error == "The app closed before this sync finished"
+    assert scheduled.status == SyncRunStatus.RUNNING

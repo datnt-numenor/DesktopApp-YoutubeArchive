@@ -1078,6 +1078,29 @@ async def get_scheduled_sync_history(
     }
 
 
+async def fail_interrupted_app_sync_runs(session: AsyncSession) -> int:
+    """Close runs the desktop app started before it last exited.
+
+    Only the app process runs MANUAL/IN_APP syncs, so when it starts none of them can still be
+    in progress. Scheduled runs belong to Task Scheduler and keep the 6-hour stale rule.
+    """
+    result = await session.execute(
+        update(SyncRun)
+        .where(
+            SyncRun.status == SyncRunStatus.RUNNING,
+            SyncRun.source.in_([SyncSource.MANUAL, SyncSource.IN_APP]),
+        )
+        .values(
+            status=SyncRunStatus.FAILED,
+            error=func.coalesce(SyncRun.error, "The app closed before this sync finished"),
+            finished_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    return int(result.rowcount or 0)
+
+
 async def cleanup_sync_history(session: AsyncSession, retention_days: int = 30) -> int:
     now = datetime.now(timezone.utc)
     stale_running_cutoff = now - timedelta(hours=6)

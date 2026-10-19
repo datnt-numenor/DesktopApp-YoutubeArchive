@@ -34,7 +34,12 @@ from auth import (
 )
 from config import BASE_DIR, settings
 from database import AsyncSessionLocal, get_session, init_db
-from downloader import canonicalize_playlist_url, extract_playlist_id_from_url
+from downloader import (
+    canonicalize_playlist_url,
+    extract_playlist_id_from_url,
+    request_download_shutdown,
+    reset_download_shutdown,
+)
 from media_import import receive_mp3_upload
 from managed_ytdlp import get_ytdlp_status
 from models import PlaylistSource, SyncRunStatus, User
@@ -75,8 +80,10 @@ ASSET_VERSION = "20261019-safe-toast"
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    reset_download_shutdown()
     async with AsyncSessionLocal() as cleanup_session:
         try:
+            await crud.fail_interrupted_app_sync_runs(cleanup_session)
             await crud.cleanup_sync_history(cleanup_session)
         except Exception:  # noqa: BLE001 - maintenance must not prevent the desktop app from opening
             await cleanup_session.rollback()
@@ -85,7 +92,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         for user in users:
             await crud.recalculate_user_storage(cleanup_session, user, settings.downloads_dir.parent)
     # Automatic sync is owned by Windows Task Scheduler, which also runs while the app is closed.
-    yield
+    try:
+        yield
+    finally:
+        # Without this, shutdown waits for the current yt-dlp download (up to an hour) and the
+        # process lingers invisibly while still holding the sync lock.
+        await asyncio.to_thread(request_download_shutdown)
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

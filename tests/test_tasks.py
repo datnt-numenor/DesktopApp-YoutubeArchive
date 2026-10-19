@@ -2,6 +2,7 @@ import asyncio
 from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import pytest_asyncio
 
 import tasks
@@ -361,3 +362,48 @@ async def test_sync_playlist_records_download_failure_history(session, monkeypat
     assert history["failed_count"] == 1
     assert history["runs"][0]["status"] == "PARTIAL"
     assert history["runs"][0]["events"][0]["message"] == "HTTP 403"
+
+
+async def test_closing_the_app_stops_sync_without_marking_videos_failed(session, monkeypatch) -> None:
+    owner = User(email="cancel-history@example.com", storage_quota_bytes=1024 * 1024)
+    playlist = Playlist(owner=owner, yt_playlist_id="cancel-history", title="Cancelled", url="https://example.com")
+    videos = [
+        Video(yt_video_id=f"cancel-{index}", title=f"Song {index}", status=VideoStatus.AVAILABLE)
+        for index in range(2)
+    ]
+    session.add_all([owner, playlist, *videos, *(PlaylistVideo(playlist=playlist, video=video) for video in videos)])
+    await session.commit()
+    playlist = await crud.get_playlist_for_owner(session, playlist.id, owner.id)
+
+    async def fake_extract(_url):
+        return {
+            "title": "Cancelled",
+            "url": "https://example.com",
+            "videos": [
+                {"yt_video_id": video.yt_video_id, "title": video.title, "is_available_on_youtube": True}
+                for video in videos
+            ],
+        }
+
+    async def fake_cache(*_args):
+        return None
+
+    download_attempts = []
+
+    async def fake_download(video_id, *_args):
+        download_attempts.append(video_id)
+        raise tasks.DownloadCancelled("The app is closing; the download was cancelled")
+
+    monkeypatch.setattr(tasks, "extract_playlist_metadata", fake_extract)
+    monkeypatch.setattr(tasks, "_cache_metadata_thumbnails", fake_cache)
+    monkeypatch.setattr(tasks, "download_video", fake_download)
+
+    with pytest.raises(tasks.DownloadCancelled):
+        await tasks.sync_playlist(session, playlist, owner, "mp3", history_source="manual")
+    history = await crud.get_today_sync_history(session, owner.id)
+    await session.refresh(playlist, ["playlist_videos"])
+
+    assert len(download_attempts) == 1
+    assert history["runs"][0]["status"] == "FAILED"
+    assert history["runs"][0]["failed_count"] == 0
+    assert all(association.download_error is None for association in playlist.playlist_videos)
