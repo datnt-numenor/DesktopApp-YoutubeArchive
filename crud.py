@@ -1,7 +1,8 @@
 import logging
+import os
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -124,6 +125,42 @@ async def list_playlists(session: AsyncSession, owner_id: str) -> list[PlaylistS
             )
         )
     return playlists
+
+
+async def find_orphaned_media_files(session: AsyncSession, data_dir: Path) -> list[Path]:
+    """Return finished MP3 files under downloads/ that no playlist (visible or hidden) references.
+
+    A file counts as referenced when its resolved path or its file name matches a stored
+    local_file_path, so paths saved by older versions in another form are never treated as unused.
+    """
+    downloads_dir = data_dir / "downloads"
+    if not downloads_dir.is_dir():
+        return []
+
+    result = await session.execute(
+        select(PlaylistVideo.local_file_path).where(PlaylistVideo.local_file_path.is_not(None)).distinct()
+    )
+    referenced_paths: set[str] = set()
+    referenced_names: set[str] = set()
+    for stored_path in result.scalars():
+        path = Path(stored_path)
+        if not path.is_absolute():
+            path = data_dir / path
+        referenced_paths.add(os.path.normcase(str(path.resolve())))
+        referenced_names.add(os.path.normcase(PureWindowsPath(stored_path).name))
+
+    orphans = []
+    for path in downloads_dir.rglob("*.mp3"):
+        relative_parts = path.relative_to(downloads_dir).parts
+        # Skip in-flight uploads and ffmpeg's partial "<id>.temp.mp3" output.
+        if ".uploads" in relative_parts or ".temp." in path.name or not path.is_file():
+            continue
+        if os.path.normcase(path.name) in referenced_names:
+            continue
+        if os.path.normcase(str(path.resolve())) in referenced_paths:
+            continue
+        orphans.append(path)
+    return sorted(orphans)
 
 
 async def get_playlist_for_owner(session: AsyncSession, playlist_id: int, owner_id: str) -> Playlist:

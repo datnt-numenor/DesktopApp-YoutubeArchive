@@ -692,3 +692,49 @@ async def test_app_start_closes_only_interrupted_app_sync_runs(session) -> None:
     assert manual.status == SyncRunStatus.FAILED
     assert manual.error == "The app closed before this sync finished"
     assert scheduled.status == SyncRunStatus.RUNNING
+
+
+async def test_find_orphaned_media_files_keeps_every_referenced_or_in_flight_file(session, tmp_path) -> None:
+    downloads = tmp_path / "downloads"
+    (downloads / "imported").mkdir(parents=True)
+    (downloads / ".uploads").mkdir()
+    files = {
+        name: downloads / name
+        for name in [
+            "linked.mp3",
+            "legacy.mp3",
+            "hidden.mp3",
+            "unused.mp3",
+            "unused.temp.mp3",
+            ".uploads/upload.mp3",
+            "imported/unused-import.mp3",
+            "notes.txt",
+        ]
+    }
+    for path in files.values():
+        path.write_bytes(b"data")
+
+    owner = User(email="orphans@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="orphans", title="Orphans", url="https://example.com")
+    stored_paths = {
+        "linked": r"downloads\linked.mp3",
+        "legacy": "data/downloads/legacy.mp3",
+        "hidden": r"downloads\hidden.mp3",
+    }
+    associations = []
+    for video_id, stored_path in stored_paths.items():
+        video = Video(yt_video_id=video_id, title=video_id)
+        associations.append(
+            PlaylistVideo(
+                playlist=playlist,
+                video=video,
+                local_file_path=stored_path,
+                hidden_at=datetime.now(timezone.utc) if video_id == "hidden" else None,
+            )
+        )
+    session.add_all([owner, playlist, *associations])
+    await session.commit()
+
+    orphans = await crud.find_orphaned_media_files(session, tmp_path)
+
+    assert orphans == sorted([files["unused.mp3"], files["imported/unused-import.mp3"]])

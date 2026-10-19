@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -521,3 +522,65 @@ def test_toast_renders_messages_as_text_not_html() -> None:
     assert '<div class="toast-body"></div>' in toast_function
     assert '.querySelector(".toast-body").textContent = String(message ?? "")' in toast_function
     assert "${message}" not in toast_function
+
+
+async def _orphan_fixture(session, tmp_path, monkeypatch):
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    kept = downloads / "kept.mp3"
+    previewed = downloads / "previewed.mp3"
+    appeared_later = downloads / "appeared-later.mp3"
+    for path in (kept, previewed, appeared_later):
+        path.write_bytes(b"12345")
+    owner = User(id="orphan-owner", email="orphan-owner@example.com", storage_quota_bytes=10_000)
+    playlist = Playlist(owner=owner, yt_playlist_id="kept", title="Kept", url="https://example.com")
+    video = Video(yt_video_id="kept", title="Kept")
+    session.add_all([owner, playlist, PlaylistVideo(playlist=playlist, video=video, local_file_path=r"downloads\kept.mp3")])
+    await session.commit()
+    monkeypatch.setattr(app_module.settings, "downloads_dir", downloads)
+    return owner, kept, previewed, appeared_later
+
+
+async def test_orphan_cleanup_lists_then_deletes_only_previewed_unused_files(session, tmp_path, monkeypatch) -> None:
+    owner, kept, previewed, appeared_later = await _orphan_fixture(session, tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "sync_process_lock", nullcontext)
+
+    listing = await app_module.list_orphaned_media.__wrapped__(request=None, session=session, _current_user=owner)
+    response = await app_module.delete_orphaned_media.__wrapped__(
+        request=None,
+        payload=app_module.OrphanedMediaDeleteRequest(files=["previewed.mp3", "kept.mp3"]),
+        session=session,
+        current_user=owner,
+        _csrf=None,
+    )
+
+    assert {item.name for item in listing.files} == {"previewed.mp3", "appeared-later.mp3"}
+    assert listing.total_bytes == 10
+    assert not previewed.exists()
+    assert kept.exists()
+    assert appeared_later.exists()
+    assert response.message.startswith("Deleted 1 unused MP3 file(s)")
+    assert "1 file(s) were skipped" in response.message
+
+
+async def test_orphan_cleanup_refuses_while_a_sync_holds_the_lock(session, tmp_path, monkeypatch) -> None:
+    owner, _kept, previewed, _appeared_later = await _orphan_fixture(session, tmp_path, monkeypatch)
+
+    @contextmanager
+    def busy_lock():
+        raise app_module.SyncAlreadyRunning("busy")
+        yield
+
+    monkeypatch.setattr(app_module, "sync_process_lock", busy_lock)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await app_module.delete_orphaned_media.__wrapped__(
+            request=None,
+            payload=app_module.OrphanedMediaDeleteRequest(files=["previewed.mp3"]),
+            session=session,
+            current_user=owner,
+            _csrf=None,
+        )
+
+    assert error.value.status_code == 409
+    assert previewed.exists()

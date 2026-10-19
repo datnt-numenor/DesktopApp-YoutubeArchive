@@ -47,6 +47,9 @@ from schemas import (
     BaseResponse,
     CustomPlaylistCreateRequest,
     LibraryVideosAddRequest,
+    OrphanedMediaDeleteRequest,
+    OrphanedMediaFileSchema,
+    OrphanedMediaResponse,
     PasswordChangeRequest,
     PlaylistAutoSyncRequest,
     PlaylistAddRequest,
@@ -59,6 +62,7 @@ from schemas import (
     YoutubeVideosAddRequest,
 )
 from storage import storage
+from sync_lock import SyncAlreadyRunning, sync_process_lock
 from tasks import (
     enqueue_custom_youtube_import,
     enqueue_metadata_import,
@@ -75,7 +79,7 @@ from windows_scheduler import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20261019-safe-toast"
+ASSET_VERSION = "20261019-orphan-cleanup"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -466,6 +470,67 @@ async def update_desktop_password(
 ) -> BaseResponse:
     await change_desktop_password(session, current_user, payload.current_password, payload.new_password)
     return BaseResponse(status="ok", message="Password changed successfully")
+
+
+def _orphan_name(path: Path) -> str:
+    return path.relative_to(settings.downloads_dir).as_posix()
+
+
+@app.get("/api/storage/orphans", response_model=OrphanedMediaResponse)
+@limiter.limit("30/minute")
+async def list_orphaned_media(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _current_user: User = Depends(get_current_user),
+) -> OrphanedMediaResponse:
+    orphans = await crud.find_orphaned_media_files(session, settings.downloads_dir.parent)
+    files = [OrphanedMediaFileSchema(name=_orphan_name(path), size_bytes=path.stat().st_size) for path in orphans]
+    return OrphanedMediaResponse(files=files, count=len(files), total_bytes=sum(item.size_bytes for item in files))
+
+
+@app.post("/settings/storage/orphans/delete", response_model=BaseResponse)
+@limiter.limit("10/minute")
+async def delete_orphaned_media(
+    request: Request,
+    payload: OrphanedMediaDeleteRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(require_csrf),
+) -> BaseResponse:
+    try:
+        # Holding the sync lock guarantees no download is about to reference one of these files.
+        with sync_process_lock():
+            orphans = await crud.find_orphaned_media_files(session, settings.downloads_dir.parent)
+            requested = set(payload.files)
+            # Only delete files the user previewed that are still unused right now.
+            targets = [path for path in orphans if _orphan_name(path) in requested]
+
+            def delete_files() -> tuple[int, int]:
+                deleted = freed = 0
+                for path in targets:
+                    try:
+                        size = path.stat().st_size
+                        path.unlink()
+                    except OSError:
+                        logger.warning("Could not delete unused media file %s", path, exc_info=True)
+                        continue
+                    deleted += 1
+                    freed += size
+                return deleted, freed
+
+            deleted, freed = await asyncio.to_thread(delete_files)
+    except SyncAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A sync or download is running; try again when it finishes",
+        ) from exc
+
+    await crud.recalculate_user_storage(session, current_user, settings.downloads_dir.parent)
+    skipped = len(requested) - deleted
+    message = f"Deleted {deleted} unused MP3 file(s), freed {format_bytes(freed)}"
+    if skipped:
+        message += f"; {skipped} file(s) were skipped because they are in use or already gone"
+    return BaseResponse(status="ok", message=message)
 
 
 @app.get("/playlist/{playlist_id}")

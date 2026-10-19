@@ -37,6 +37,22 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+class OrphanedMediaDeleteRequest(BaseModel):
+    # Names exactly as returned by GET /api/storage/orphans (relative to downloads/).
+    files: list[str] = Field(min_length=1, max_length=20000)
+
+
+class OrphanedMediaFileSchema(BaseModel):
+    name: str
+    size_bytes: int
+
+
+class OrphanedMediaResponse(BaseModel):
+    files: list[OrphanedMediaFileSchema]
+    count: int
+    total_bytes: int
+
+
 class BaseResponse(BaseModel):
     status: Literal["ok", "error"]
     message: str

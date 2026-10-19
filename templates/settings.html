@@ -163,4 +163,23 @@
         </div>
     </div>
 </section>
+
+<section class="settings-summary mt-4">
+    <div class="panel" id="orphanCleanupPanel">
+        <div class="panel-header compact">
+            <h2><i class="bi bi-trash3 me-1"></i>Unused MP3 files</h2>
+            <p>Deleting a playlist keeps its MP3 files. Find files no playlist uses any more and delete them to free storage.</p>
+        </div>
+        <button class="btn btn-outline-secondary" type="button" id="findOrphansButton">
+            <i class="bi bi-search me-1"></i>Find unused files
+        </button>
+        <div class="mt-3 d-none" id="orphanResult">
+            <div class="small" id="orphanSummary"></div>
+            <ul class="small text-muted mt-2 mb-0" id="orphanList"></ul>
+            <button class="btn btn-danger mt-3 d-none" type="button" id="deleteOrphansButton">
+                <i class="bi bi-trash3 me-1"></i><span>Delete unused files</span>
+            </button>
+        </div>
+    </div>
+</section>
 {% endblock %}

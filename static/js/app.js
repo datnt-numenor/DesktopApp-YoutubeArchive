@@ -1345,6 +1345,86 @@ document.addEventListener("change", async (event) => {
     }
 });
 
+const ORPHAN_PREVIEW_LIMIT = 20;
+let orphanedMediaFiles = [];
+
+function formatFileSize(bytes) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = Number(bytes || 0);
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+        size /= 1024;
+        unit += 1;
+    }
+    return unit === 0 ? `${size} B` : `${size.toFixed(1)} ${units[unit]}`;
+}
+
+function renderOrphanedMedia(result) {
+    const panel = document.getElementById("orphanResult");
+    const summary = document.getElementById("orphanSummary");
+    const list = document.getElementById("orphanList");
+    const deleteButton = document.getElementById("deleteOrphansButton");
+    if (!panel || !summary || !list || !deleteButton) return;
+
+    orphanedMediaFiles = result.files.map((file) => file.name);
+    panel.classList.remove("d-none");
+    list.replaceChildren();
+    if (!result.count) {
+        summary.textContent = "No unused MP3 files found.";
+        deleteButton.classList.add("d-none");
+        return;
+    }
+
+    summary.textContent = `${result.count} unused MP3 file(s), ${formatFileSize(result.total_bytes)} in total.`;
+    result.files.slice(0, ORPHAN_PREVIEW_LIMIT).forEach((file) => {
+        const item = document.createElement("li");
+        item.textContent = `${file.name} (${formatFileSize(file.size_bytes)})`;
+        list.appendChild(item);
+    });
+    if (result.count > ORPHAN_PREVIEW_LIMIT) {
+        const more = document.createElement("li");
+        more.textContent = `+${result.count - ORPHAN_PREVIEW_LIMIT} more`;
+        list.appendChild(more);
+    }
+    deleteButton.querySelector("span").textContent = `Delete ${result.count} file(s)`;
+    deleteButton.classList.remove("d-none");
+}
+
+async function findOrphanedMedia(button) {
+    button.disabled = true;
+    try {
+        renderOrphanedMedia(await requestJson("/api/storage/orphans", { timeoutMs: 60000 }));
+    } catch (error) {
+        showToast(error.message, "danger");
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function deleteOrphanedMedia(button) {
+    if (!orphanedMediaFiles.length) return;
+    const confirmed = window.confirm(
+        `Permanently delete ${orphanedMediaFiles.length} unused MP3 file(s)? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    button.disabled = true;
+    try {
+        const data = await requestJson("/settings/storage/orphans/delete", {
+            method: "POST",
+            body: JSON.stringify({ files: orphanedMediaFiles }),
+            timeoutMs: 120000,
+        });
+        orphanedMediaFiles = [];
+        invalidatePageCache();
+        showToast(data.message || "Unused files deleted");
+        await refreshCurrentPage();
+    } catch (error) {
+        showToast(error.message, "danger");
+        button.disabled = false;
+    }
+}
+
 document.addEventListener("click", async (event) => {
     const todaySyncToggle = event.target.closest(".js-today-sync-toggle");
     if (todaySyncToggle) {
@@ -1418,6 +1498,16 @@ document.addEventListener("click", async (event) => {
             showToast(error.message, "danger");
             hideVideoButton.disabled = false;
         }
+        return;
+    }
+
+    if (event.target.closest("#findOrphansButton")) {
+        await findOrphanedMedia(event.target.closest("#findOrphansButton"));
+        return;
+    }
+
+    if (event.target.closest("#deleteOrphansButton")) {
+        await deleteOrphanedMedia(event.target.closest("#deleteOrphansButton"));
         return;
     }
 
