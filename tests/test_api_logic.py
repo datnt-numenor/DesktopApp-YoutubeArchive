@@ -596,3 +596,81 @@ def test_requests_with_a_foreign_host_header_are_rejected() -> None:
 
     assert rebinding.status_code == 400
     assert local.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("next_path", "expected"),
+    [
+        ("/playlist/3?hidden=1", "/playlist/3?hidden=1"),
+        ("/settings", "/settings"),
+        (None, "/"),
+        ("", "/"),
+        ("https://evil.example/login", "/"),
+        ("//evil.example", "/"),
+        (r"/\evil.example", "/"),
+        (r"/\/evil.example", "/"),
+        ("/\t/evil.example", "/"),
+        ("/\n/evil.example", "/"),
+        ("settings", "/"),
+    ],
+)
+def test_login_next_path_only_allows_same_site_paths(next_path, expected) -> None:
+    assert app_module.safe_next_path(next_path) == expected
+
+
+async def _upload_owner(session, used_bytes: int, quota_bytes: int) -> tuple[User, Playlist]:
+    owner = User(id="upload-owner", email="upload@example.com", storage_used_bytes=used_bytes, storage_quota_bytes=quota_bytes)
+    playlist = Playlist(
+        owner=owner,
+        yt_playlist_id="custom-upload",
+        title="Uploads",
+        url="custom://upload",
+        source_type=app_module.PlaylistSource.CUSTOM,
+    )
+    session.add_all([owner, playlist])
+    await session.commit()
+    return owner, playlist
+
+
+async def test_upload_is_limited_to_the_remaining_storage(session, monkeypatch) -> None:
+    owner, playlist = await _upload_owner(session, used_bytes=0, quota_bytes=1000)
+    captured = {}
+
+    async def fake_recalculate(_session, user, _data_dir):
+        user.storage_used_bytes = 900
+        return 900
+
+    async def fake_receive(_request, _downloads_dir, max_file_bytes):
+        captured["max_file_bytes"] = max_file_bytes
+        raise app_module.HTTPException(status_code=413, detail="MP3 exceeds storage quota")
+
+    monkeypatch.setattr(app_module.crud, "recalculate_user_storage", fake_recalculate)
+    monkeypatch.setattr(app_module, "receive_mp3_upload", fake_receive)
+
+    with pytest.raises(app_module.HTTPException):
+        await app_module.upload_custom_mp3.__wrapped__(
+            request=None, playlist_id=playlist.id, session=session, current_user=owner, _csrf=None
+        )
+
+    assert captured["max_file_bytes"] == 100
+
+
+async def test_upload_is_refused_without_reading_when_storage_is_full(session, monkeypatch) -> None:
+    owner, playlist = await _upload_owner(session, used_bytes=1000, quota_bytes=1000)
+
+    async def keep_usage(_session, user, _data_dir):
+        return user.storage_used_bytes
+
+    async def must_not_receive(*_args):
+        raise AssertionError("a full quota must reject the upload before reading it")
+
+    monkeypatch.setattr(app_module.crud, "recalculate_user_storage", keep_usage)
+    monkeypatch.setattr(app_module, "receive_mp3_upload", must_not_receive)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await app_module.upload_custom_mp3.__wrapped__(
+            request=None, playlist_id=playlist.id, session=session, current_user=owner, _csrf=None
+        )
+
+    assert error.value.status_code == 413
+    assert error.value.detail == "Storage quota is full"

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -209,9 +209,19 @@ async def build_topbar_stats(session: AsyncSession, user: User) -> dict[str, obj
 
 
 def safe_next_path(next_path: str | None) -> str:
-    if next_path and next_path.startswith("/") and not next_path.startswith("//"):
-        return next_path
-    return "/"
+    r"""Allow only same-site paths after login.
+
+    Browsers treat "\" like "/" in URLs, so "/\evil.com" would act as "//evil.com"; control
+    characters can be stripped by the browser with the same effect. Reject both outright.
+    """
+    if not next_path or not next_path.startswith("/") or next_path.startswith("//"):
+        return "/"
+    if "\\" in next_path or any(ord(character) < 32 or ord(character) == 127 for character in next_path):
+        return "/"
+    parsed = urlparse(next_path)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return next_path
 
 
 def login_redirect(request: Request) -> RedirectResponse:
@@ -692,10 +702,14 @@ async def upload_custom_mp3(
 ) -> BaseResponse:
     await crud.get_custom_playlist_for_owner(session, playlist_id, current_user.id)
     await crud.recalculate_user_storage(session, current_user, settings.downloads_dir.parent)
-    imported = await receive_mp3_upload(request, settings.downloads_dir, current_user.storage_quota_bytes)
+    remaining_bytes = max(0, current_user.storage_quota_bytes - current_user.storage_used_bytes)
+    if remaining_bytes == 0:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Storage quota is full")
+    # Stop writing as soon as the upload passes the free space, not after it fills the whole quota.
+    imported = await receive_mp3_upload(request, settings.downloads_dir, remaining_bytes)
     if imported.is_new_file and current_user.storage_used_bytes + imported.size > current_user.storage_quota_bytes:
         imported.path.unlink(missing_ok=True)
-        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="MP3 would exceed 20 GB storage quota")
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="MP3 would exceed the storage quota")
 
     object_key = await storage.upload_file(
         imported.path,
