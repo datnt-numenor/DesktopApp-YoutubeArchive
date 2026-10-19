@@ -1,9 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 
@@ -41,7 +42,7 @@ from downloader import (
     reset_download_shutdown,
 )
 from media_import import receive_mp3_upload
-from managed_ytdlp import get_ytdlp_status
+from managed_ytdlp import ManagedYtDlpError, ensure_ytdlp_binary, get_ytdlp_status
 from models import PlaylistSource, SyncRunStatus, User
 from schemas import (
     BaseResponse,
@@ -79,7 +80,7 @@ from windows_scheduler import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20261019-orphan-cleanup"
+ASSET_VERSION = "20261019-redesign"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -146,8 +147,33 @@ def format_gigabytes(value: int | None) -> str:
     return f"{size:.0f} GB"
 
 
+VIETNAMESE_WEEKDAYS = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
+
+
+def format_local_datetime(value: object, weekday: bool = False) -> str:
+    """Render ISO or Task Scheduler timestamps as dd/mm/yyyy in local time; unknown text passes through."""
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        moment = value
+        has_seconds = True
+    else:
+        text_value = str(value).strip()
+        try:
+            moment = datetime.fromisoformat(text_value)
+        except ValueError:
+            return text_value
+        has_seconds = text_value.count(":") >= 2
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    label = moment.strftime("%d/%m/%Y %H:%M:%S" if has_seconds else "%d/%m/%Y %H:%M")
+    return f"{VIETNAMESE_WEEKDAYS[moment.weekday()]}, {label}" if weekday else label
+
+
 templates.env.filters["duration"] = format_duration
 templates.env.filters["bytes"] = format_bytes
+templates.env.filters["local_datetime"] = format_local_datetime
+templates.env.globals["weekday_names"] = VIETNAMESE_WEEKDAYS
 
 
 def calculate_storage_percent(user: User) -> int:
@@ -445,6 +471,7 @@ async def settings_page(
             "storage_percent": storage_percent,
             "topbar_stats": topbar_stats,
             "playlist_quota": current_user.playlist_quota,
+            "downloads_dir": str(settings.downloads_dir),
         },
     )
 
@@ -457,6 +484,41 @@ async def yt_dlp_status(
 ) -> YtDlpStatusResponse:
     del request, current_user
     return YtDlpStatusResponse(**await asyncio.to_thread(get_ytdlp_status))
+
+
+@app.post("/api/yt-dlp/check", response_model=YtDlpStatusResponse)
+@limiter.limit("6/minute")
+async def check_yt_dlp_update(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(require_csrf),
+) -> YtDlpStatusResponse:
+    del request, current_user
+    try:
+        await asyncio.to_thread(ensure_ytdlp_binary, force_update=True)
+    except ManagedYtDlpError:
+        # The failure is recorded in the updater state and shown through last_error.
+        logger.warning("Manual yt-dlp update check failed", exc_info=True)
+    return YtDlpStatusResponse(**await asyncio.to_thread(get_ytdlp_status))
+
+
+@app.post("/settings/storage/open-folder", response_model=BaseResponse)
+@limiter.limit("20/minute")
+async def open_storage_folder(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(require_csrf),
+) -> BaseResponse:
+    del request, current_user
+    folder = settings.downloads_dir
+    if not hasattr(os, "startfile"):
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Opening folders is only supported on Windows")
+    try:
+        await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(os.startfile, folder)
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not open {folder}") from exc
+    return BaseResponse(status="ok", message="Đã mở thư mục lưu trữ")
 
 
 @app.patch("/settings/password", response_model=BaseResponse)

@@ -303,7 +303,7 @@ def test_settings_offers_install_button_when_task_is_missing() -> None:
     script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="syncScheduleForm"' in template and "data-installed=" in template
-    assert "Install daily sync" in template
+    assert "Cài đặt đồng bộ hằng ngày" in template
     assert '"/settings/sync-schedule/install"' in script
 
 

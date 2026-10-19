@@ -25,7 +25,7 @@
             <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
             <span class="auto-sync-copy">
                 <i class="bi bi-arrow-repeat"></i>
-                <span class="js-auto-sync-label">{{ 'Auto-sync on' if playlist.auto_sync else 'Auto-sync off' }}</span>
+                <span class="js-auto-sync-label">{{ 'Tự đồng bộ: bật' if playlist.auto_sync else 'Tự đồng bộ: tắt' }}</span>
             </span>
         </label>
         <button class="btn btn-outline-danger js-sync" data-playlist-id="{{ playlist.id }}" data-format="mp3">

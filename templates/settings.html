@@ -1,153 +1,257 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="settings-grid">
-    <div>
-        <h1>Settings</h1>
-        <p class="text-muted">Scheduler and local archive preferences.</p>
-    </div>
-    <div class="panel">
-        <form id="syncScheduleForm" class="settings-form" data-installed="{{ 'true' if scheduled_sync else 'false' }}">
-            <label class="form-label" for="syncTime">Daily MP3 sync time</label>
-            <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required>
-            {% if scheduled_sync %}
-            <div class="small text-muted mt-2">
-                Windows Task Scheduler: <strong>{{ scheduled_sync.state }}</strong>
-                {% if scheduled_sync.next_run_time %}| Next run: {{ scheduled_sync.next_run_time }}{% endif %}
+{% set sync_status_labels = {
+    'success': ('Thành công', 'success', 'bi-check-lg'),
+    'partial': ('Hoàn thành một phần', 'warning', 'bi-exclamation-lg'),
+    'failed': ('Thất bại', 'danger', 'bi-x-lg'),
+    'skipped': ('Bỏ qua', 'warning', 'bi-skip-forward'),
+    'running': ('Đang chạy', 'info', 'bi-arrow-repeat'),
+} %}
+<section class="settings-layout">
+    <div class="settings-row settings-row-top">
+        <article class="dash-card settings-card">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-violet"><i class="bi bi-clock"></i></span>
+                <div>
+                    <h2>Thời gian đồng bộ MP3 hằng ngày</h2>
+                    <p>Lên lịch tự động đồng bộ các playlist đã lưu thành MP3.</p>
+                </div>
+            </header>
+
+            <form id="syncScheduleForm" class="settings-form" data-installed="{{ 'true' if scheduled_sync else 'false' }}">
+                <div class="settings-time-row">
+                    <label class="form-label" for="syncTime">Thời gian chạy</label>
+                    <div class="input-with-icon">
+                        <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required>
+                        <i class="bi bi-clock" aria-hidden="true"></i>
+                    </div>
+                </div>
+
+                {% if scheduled_sync %}
+                <div class="settings-inset schedule-info">
+                    <div class="schedule-next">
+                        <span class="schedule-next-icon"><i class="bi bi-calendar3"></i></span>
+                        <div>
+                            <small>Lần chạy tiếp theo</small>
+                            <strong>{{ scheduled_sync.next_run_time|local_datetime(weekday=True) if scheduled_sync.next_run_time else 'Chưa có lịch' }}</strong>
+                        </div>
+                    </div>
+                    <dl class="info-list">
+                        <div>
+                            <dt><i class="bi bi-gear"></i>Trình lập lịch Windows</dt>
+                            <dd>
+                                <span class="status-dot-label {{ 'is-error' if scheduled_sync.state == 'Disabled' else '' }}">
+                                    {{ 'Đang hoạt động' if scheduled_sync.state in ['Ready', 'Running'] else scheduled_sync.state }}
+                                </span>
+                            </dd>
+                        </div>
+                        <div>
+                            <dt><i class="bi bi-clock-history"></i>Lần chạy gần nhất</dt>
+                            <dd>{{ scheduled_sync.last_run_time|local_datetime if scheduled_sync.last_run_time else 'Chưa chạy lần nào' }}</dd>
+                        </div>
+                        <div>
+                            <dt><i class="bi bi-file-earmark-text"></i>Kết quả</dt>
+                            <dd>
+                                {% if scheduled_sync.last_task_result_hex %}
+                                {{ scheduled_sync.last_task_result_hex }} ({{ 'Thành công' if scheduled_sync.last_task_result == 0 else 'Có lỗi' }})
+                                {% else %}—{% endif %}
+                            </dd>
+                        </div>
+                    </dl>
+                    <div class="schedule-flags">
+                        <span class="{{ 'is-on' if scheduled_sync.wake_to_run else '' }}"><i class="bi bi-moon-stars"></i>Đánh thức máy: {{ 'Bật' if scheduled_sync.wake_to_run else 'Tắt' }}</span>
+                        <span class="{{ 'is-on' if scheduled_sync.disallow_start_if_on_batteries else '' }}"><i class="bi bi-plug"></i>Cần cắm sạc: {{ 'Có' if scheduled_sync.disallow_start_if_on_batteries else 'Không' }}</span>
+                        <span class="{{ 'is-on' if scheduled_sync.start_when_available else '' }}"><i class="bi bi-skip-end"></i>Chạy bù khi lỡ lịch: {{ 'Bật' if scheduled_sync.start_when_available else 'Tắt' }}</span>
+                    </div>
+                </div>
+                {% if scheduled_sync.last_task_result and scheduled_sync.last_task_result != 0 %}
+                <div class="download-error">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    Lần chạy gần nhất của Windows trả về {{ scheduled_sync.last_task_result_hex }}. Xem kết quả đồng bộ bên cạnh.
+                </div>
+                {% endif %}
+                {% else %}
+                <div class="download-error">
+                    <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or 'Chưa cài đặt tác vụ đồng bộ trong Windows Task Scheduler.' }}
+                </div>
+                <p class="settings-note">
+                    Đồng bộ tự động chạy qua Windows Task Scheduler, kể cả khi ứng dụng đang đóng.
+                    Chọn giờ chạy rồi cài đặt tác vụ hằng ngày.
+                </p>
+                {% endif %}
+
+                <button class="btn btn-gradient btn-block" type="submit">
+                    {% if scheduled_sync %}
+                    <i class="bi bi-floppy"></i><span>Lưu thay đổi</span>
+                    {% else %}
+                    <i class="bi bi-calendar-plus"></i><span>Cài đặt đồng bộ hằng ngày</span>
+                    {% endif %}
+                </button>
+            </form>
+        </article>
+
+        <article class="dash-card settings-card">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-cyan"><i class="bi bi-arrow-repeat"></i></span>
+                <div>
+                    <h2>Tình trạng đồng bộ</h2>
+                    <p>Kết quả lần đồng bộ gần nhất và thống kê.</p>
+                </div>
+            </header>
+
+            {% if scheduled_sync and scheduled_sync.sync_status %}
+            {% set status_info = sync_status_labels.get(scheduled_sync.sync_status, (scheduled_sync.sync_status|capitalize, 'info', 'bi-info-lg')) %}
+            <div class="settings-inset sync-health">
+                <div class="sync-health-main">
+                    <span class="sync-health-badge tone-{{ status_info[1] }}"><i class="bi {{ status_info[2] }}"></i></span>
+                    <div>
+                        <small>Lần đồng bộ gần nhất</small>
+                        <strong class="sync-health-label tone-{{ status_info[1] }}">{{ status_info[0] }}</strong>
+                        <span>
+                            {{ scheduled_sync.sync_finished_at|local_datetime if scheduled_sync.sync_finished_at else 'Đang chạy' }}
+                            {% if scheduled_sync.last_task_result_hex %}({{ scheduled_sync.last_task_result_hex }}){% endif %}
+                        </span>
+                    </div>
+                </div>
+                <div class="sync-health-side">
+                    <div>
+                        <strong>{{ scheduled_sync.sync_succeeded_count + scheduled_sync.sync_partial_count }}</strong>
+                        <small>playlist đã đồng bộ</small>
+                    </div>
+                    <div>
+                        <strong>{{ scheduled_sync.sync_failed_count }}</strong>
+                        <small>thất bại</small>
+                    </div>
+                </div>
             </div>
-            <div class="small text-muted mt-2">
-                {% if scheduled_sync.last_run_time %}Last task run: {{ scheduled_sync.last_run_time }}{% else %}No task run recorded{% endif %}
-                {% if scheduled_sync.last_task_result_hex %}| Result: {{ scheduled_sync.last_task_result_hex }}{% endif %}
+
+            <h3 class="settings-subheading">Tóm tắt kết quả</h3>
+            <div class="settings-inset result-summary">
+                <div class="result-item tone-success">
+                    <i class="bi bi-check-circle"></i>
+                    <span><small>Đã hoàn thành</small><strong>{{ scheduled_sync.sync_succeeded_count }} playlist</strong></span>
+                </div>
+                <div class="result-item tone-warning">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <span><small>Một phần</small><strong>{{ scheduled_sync.sync_partial_count }} playlist</strong></span>
+                </div>
+                <div class="result-item tone-danger">
+                    <i class="bi bi-x-circle"></i>
+                    <span><small>Thất bại</small><strong>{{ scheduled_sync.sync_failed_count }} playlist</strong></span>
+                </div>
             </div>
-            <div class="small text-muted mt-2">
-                Wake from sleep: <strong>{{ 'On' if scheduled_sync.wake_to_run else 'Off' }}</strong>
-                | AC power required: <strong>{{ 'Yes' if scheduled_sync.disallow_start_if_on_batteries else 'No' }}</strong>
-                | Run when available: <strong>{{ 'On' if scheduled_sync.start_when_available else 'Off' }}</strong>
-            </div>
-            {% if scheduled_sync.last_task_result and scheduled_sync.last_task_result != 0 %}
-            <div class="download-error mt-2">
-                <i class="bi bi-exclamation-triangle me-1"></i>
-                The last Windows task returned {{ scheduled_sync.last_task_result_hex }}. Check the sync result below.
+            {% if scheduled_sync.sync_summary %}
+            <p class="settings-note" title="Tóm tắt do tác vụ đồng bộ ghi lại">{{ scheduled_sync.sync_summary }}</p>
+            {% endif %}
+            {% if scheduled_sync.sync_error %}
+            <div class="download-error">
+                <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync.sync_error }}
             </div>
             {% endif %}
             {% else %}
-            <div class="download-error mt-2">
-                <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or 'Windows scheduled sync is not installed.' }}
-            </div>
-            <div class="small text-muted mt-2">
-                Automatic sync runs through Windows Task Scheduler, including while the app is closed.
-                Choose a time and install the daily task.
+            <div class="settings-inset settings-empty">
+                <i class="bi bi-hourglass-split"></i>
+                <span>Chưa có kết quả đồng bộ tự động nào được ghi lại.</span>
             </div>
             {% endif %}
-            <button class="btn btn-danger mt-3" type="submit">
-                {% if scheduled_sync %}
-                <i class="bi bi-save me-1"></i>Save
-                {% else %}
-                <i class="bi bi-calendar-plus me-1"></i>Install daily sync
-                {% endif %}
+        </article>
+    </div>
+
+    <div class="settings-row settings-row-bottom">
+        <article class="dash-card settings-card" id="ytDlpStatusPanel">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-cyan"><i class="bi bi-download"></i></span>
+                <div>
+                    <h2>Trình cập nhật yt-dlp</h2>
+                    <p>Kiểm tra phiên bản mới hằng tuần và tự động cập nhật để đảm bảo hoạt động ổn định.</p>
+                </div>
+            </header>
+            <div class="settings-inset ytdlp-grid">
+                <div>
+                    <small>Phiên bản hiện tại</small>
+                    <strong class="ytdlp-version" id="ytDlpInstalledVersion">{{ yt_dlp_status.installed_version or 'Chưa cài đặt' }}</strong>
+                    <span id="ytDlpPreviousVersion">
+                        {% if yt_dlp_status.previous_version %}Phiên bản trước: {{ yt_dlp_status.previous_version }}{% else %}Chưa từng có phiên bản trước{% endif %}
+                    </span>
+                </div>
+                <div>
+                    <small>Trạng thái cập nhật</small>
+                    <strong class="status-dot-label {{ 'is-error' if yt_dlp_status.last_error else '' }}"><span id="ytDlpUpdateResult">{{ 'Kiểm tra thất bại' if yt_dlp_status.last_error else 'Sẵn sàng' }}</span></strong>
+                    <span id="ytDlpLastCheck">
+                        {% if yt_dlp_status.last_successful_check_at %}Lần kiểm tra: {{ yt_dlp_status.last_successful_check_at|local_datetime }}{% else %}Chưa kiểm tra{% endif %}
+                    </span>
+                </div>
+            </div>
+            <p class="settings-note" id="ytDlpLastUpdated">
+                {% if yt_dlp_status.last_updated_at %}Cập nhật lần cuối: {{ yt_dlp_status.last_updated_at|local_datetime }}{% else %}Chưa có lần cập nhật nào.{% endif %}
+            </p>
+            <div class="download-error {{ 'd-none' if not yt_dlp_status.last_error else '' }}" id="ytDlpUpdateError">
+                <i class="bi bi-exclamation-triangle me-1"></i><span>{{ yt_dlp_status.last_error or '' }}</span>
+            </div>
+            <button class="btn btn-outline-gradient btn-block settings-card-action" type="button" id="ytDlpCheckButton">
+                <i class="bi bi-arrow-repeat"></i><span>Kiểm tra cập nhật ngay</span>
             </button>
-        </form>
-    </div>
-</section>
+        </article>
 
-<section class="settings-summary mt-4">
-    <div class="panel">
-        <div class="panel-header compact">
-            <h2><i class="bi bi-arrow-repeat me-1"></i>Scheduled sync health</h2>
-            <p>The durable result remains available even if Windows hides a notification.</p>
-        </div>
-        {% if scheduled_sync and scheduled_sync.sync_status %}
-        <div class="quota-grid">
-            <div>
-                <span class="metric-label">Last result</span>
-                <strong>{{ scheduled_sync.sync_status|upper }}</strong>
-                <small>{{ scheduled_sync.sync_finished_at or 'In progress' }}</small>
-            </div>
-            <div>
-                <span class="metric-label">Summary</span>
-                <strong>{{ scheduled_sync.sync_summary or 'No summary recorded' }}</strong>
-            </div>
-        </div>
-        {% if scheduled_sync.sync_error %}
-        <div class="download-error mt-3">
-            <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync.sync_error }}
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="small text-muted">No scheduled sync result has been recorded yet.</div>
-        {% endif %}
-    </div>
-</section>
+        <article class="dash-card settings-card">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-violet"><i class="bi bi-key"></i></span>
+                <div>
+                    <h2>Đổi mật khẩu</h2>
+                    <p>Thay đổi mật khẩu tài khoản cục bộ để bảo vệ dữ liệu của bạn.</p>
+                </div>
+            </header>
+            <form id="changePasswordForm" class="settings-form password-form">
+                <div class="password-field">
+                    <label class="visually-hidden" for="currentPassword">Mật khẩu hiện tại</label>
+                    <i class="bi bi-lock" aria-hidden="true"></i>
+                    <input class="form-control" id="currentPassword" name="current_password" type="password" placeholder="Mật khẩu hiện tại" autocomplete="current-password" required>
+                    <button class="password-eye js-toggle-password" type="button" aria-controls="currentPassword" aria-pressed="false" title="Hiện / ẩn mật khẩu"><i class="bi bi-eye"></i></button>
+                </div>
+                <div class="password-field">
+                    <label class="visually-hidden" for="newPassword">Mật khẩu mới</label>
+                    <i class="bi bi-lock" aria-hidden="true"></i>
+                    <input class="form-control" id="newPassword" name="new_password" type="password" minlength="8" placeholder="Mật khẩu mới (tối thiểu 8 ký tự)" autocomplete="new-password" required>
+                    <button class="password-eye js-toggle-password" type="button" aria-controls="newPassword" aria-pressed="false" title="Hiện / ẩn mật khẩu"><i class="bi bi-eye"></i></button>
+                </div>
+                <div class="password-field">
+                    <label class="visually-hidden" for="confirmNewPassword">Xác nhận mật khẩu mới</label>
+                    <i class="bi bi-lock" aria-hidden="true"></i>
+                    <input class="form-control" id="confirmNewPassword" type="password" minlength="8" placeholder="Xác nhận mật khẩu mới" autocomplete="new-password" required>
+                    <button class="password-eye js-toggle-password" type="button" aria-controls="confirmNewPassword" aria-pressed="false" title="Hiện / ẩn mật khẩu"><i class="bi bi-eye"></i></button>
+                </div>
+                <button class="btn btn-gradient btn-block settings-card-action" type="submit">
+                    <i class="bi bi-key"></i><span>Đổi mật khẩu</span>
+                </button>
+            </form>
+        </article>
 
-<section class="settings-summary mt-4">
-    <div class="panel" id="ytDlpStatusPanel">
-        <div class="panel-header compact">
-            <h2><i class="bi bi-cloud-arrow-down me-1"></i>yt-dlp updater</h2>
-            <p>The app checks the official release weekly and keeps the working version if an update fails.</p>
-        </div>
-        <div class="quota-grid yt-dlp-status-grid">
-            <div>
-                <span class="metric-label">Installed version</span>
-                <strong id="ytDlpInstalledVersion">{{ yt_dlp_status.installed_version or 'Not installed' }}</strong>
-                <small id="ytDlpPreviousVersion">
-                    {% if yt_dlp_status.previous_version %}Previous: {{ yt_dlp_status.previous_version }}{% else %}No previous version recorded{% endif %}
-                </small>
+        <article class="dash-card settings-card">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-violet"><i class="bi bi-database"></i></span>
+                <div>
+                    <h2>Lưu trữ cục bộ</h2>
+                    <p>Quản lý dung lượng lưu trữ và vị trí lưu file đã tải xuống.</p>
+                </div>
+            </header>
+            <div class="settings-inset storage-folder">
+                <i class="bi bi-folder2"></i>
+                <div>
+                    <small>Thư mục lưu trữ hiện tại</small>
+                    <strong title="{{ downloads_dir }}">{{ downloads_dir }}</strong>
+                </div>
+                <button class="btn icon-btn" type="button" id="openStorageFolderButton" title="Mở thư mục trong Explorer">
+                    <i class="bi bi-folder2-open"></i>
+                </button>
             </div>
-            <div>
-                <span class="metric-label">Update status</span>
-                <strong id="ytDlpUpdateResult">{{ 'Update check failed' if yt_dlp_status.last_error else 'Ready' }}</strong>
-                <small id="ytDlpLastCheck">
-                    {% if yt_dlp_status.last_successful_check_at %}Last successful check: {{ yt_dlp_status.last_successful_check_at }}{% else %}Not checked yet{% endif %}
-                </small>
-            </div>
-        </div>
-        <div class="small text-muted mt-3" id="ytDlpLastUpdated">
-            {% if yt_dlp_status.last_updated_at %}Last updated: {{ yt_dlp_status.last_updated_at }}{% else %}No completed update recorded yet.{% endif %}
-        </div>
-        <div class="download-error mt-2 {{ 'd-none' if not yt_dlp_status.last_error else '' }}" id="ytDlpUpdateError">
-            <i class="bi bi-exclamation-triangle me-1"></i><span>{{ yt_dlp_status.last_error or '' }}</span>
-        </div>
-    </div>
-</section>
-
-<section class="settings-summary mt-4">
-    <div class="panel">
-        <div class="panel-header compact">
-            <h2>Change password</h2>
-            <p>Confirm your current password before choosing a new one.</p>
-        </div>
-        <form id="changePasswordForm" class="settings-form">
-            <div class="mb-3">
-                <label class="form-label" for="currentPassword">Current password</label>
-                <input class="form-control" id="currentPassword" name="current_password" type="password" autocomplete="current-password" required>
-            </div>
-            <div class="mb-3">
-                <label class="form-label" for="newPassword">New password</label>
-                <input class="form-control" id="newPassword" name="new_password" type="password" minlength="8" autocomplete="new-password" required>
-                <div class="form-text">Use at least 8 characters.</div>
-            </div>
-            <div class="mb-3">
-                <label class="form-label" for="confirmNewPassword">Confirm new password</label>
-                <input class="form-control" id="confirmNewPassword" type="password" minlength="8" autocomplete="new-password" required>
-            </div>
-            <button class="btn btn-danger" type="submit">
-                <i class="bi bi-key me-1"></i>Change password
-            </button>
-        </form>
-    </div>
-</section>
-
-<section class="settings-summary mt-4">
-    <div class="panel">
-        <div class="panel-header compact">
-            <h2>Local archive</h2>
-            <p>Local owner</p>
-        </div>
-        <div class="quota-grid">
-            <div class="quota-storage storage-{{ topbar_stats.storage_level }}">
-                <span class="metric-label">Storage</span>
-                <strong>{{ user.storage_used_bytes|bytes }}</strong>
-                <small>{{ storage_percent }}% of {{ user.storage_quota_bytes|bytes }}</small>
+            <div class="settings-inset storage-usage storage-{{ topbar_stats.storage_level }}">
+                <div class="storage-usage-row">
+                    <small>Dung lượng đã dùng</small>
+                    <span>{{ storage_percent }}%</span>
+                </div>
+                <strong>{{ topbar_stats.storage_used_label }} / {{ topbar_stats.storage_quota_label }}</strong>
+                <div class="storage-bar" aria-hidden="true"><span style="--storage-percent: {{ storage_percent }}%;"></span></div>
                 {% if topbar_stats.storage_level != 'normal' %}
                 <span class="quota-storage-note">
                     <i class="bi bi-exclamation-triangle-fill"></i>
@@ -155,31 +259,30 @@
                 </span>
                 {% endif %}
             </div>
-            <div>
-                <span class="metric-label">Playlist quota</span>
-                <strong>{{ playlist_quota }}</strong>
-                <small>maximum saved playlists</small>
-            </div>
-        </div>
+            <p class="settings-note">Tối đa {{ playlist_quota }} playlist được lưu trữ.</p>
+        </article>
     </div>
-</section>
 
-<section class="settings-summary mt-4">
-    <div class="panel" id="orphanCleanupPanel">
-        <div class="panel-header compact">
-            <h2><i class="bi bi-trash3 me-1"></i>Unused MP3 files</h2>
-            <p>Deleting a playlist keeps its MP3 files. Find files no playlist uses any more and delete them to free storage.</p>
+    <article class="dash-card settings-card" id="orphanCleanupPanel">
+        <div class="orphan-head">
+            <header class="settings-card-head">
+                <span class="settings-card-icon tone-danger"><i class="bi bi-trash3"></i></span>
+                <div>
+                    <h2>File MP3 không dùng đến</h2>
+                    <p>Xoá playlist sẽ giữ lại file MP3. Tìm các file không còn playlist nào dùng và xoá để giải phóng dung lượng.</p>
+                </div>
+            </header>
+            <button class="btn btn-outline-gradient" type="button" id="findOrphansButton">
+                <i class="bi bi-search"></i><span>Tìm file không dùng</span>
+            </button>
         </div>
-        <button class="btn btn-outline-secondary" type="button" id="findOrphansButton">
-            <i class="bi bi-search me-1"></i>Find unused files
-        </button>
         <div class="mt-3 d-none" id="orphanResult">
             <div class="small" id="orphanSummary"></div>
             <ul class="small text-muted mt-2 mb-0" id="orphanList"></ul>
             <button class="btn btn-danger mt-3 d-none" type="button" id="deleteOrphansButton">
-                <i class="bi bi-trash3 me-1"></i><span>Delete unused files</span>
+                <i class="bi bi-trash3 me-1"></i><span>Xoá các file không dùng</span>
             </button>
         </div>
-    </div>
+    </article>
 </section>
 {% endblock %}

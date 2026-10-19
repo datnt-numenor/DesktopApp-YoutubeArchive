@@ -940,6 +940,7 @@ async def get_today_sync_history(session: AsyncSession, owner_id: str) -> dict[s
     runs = list(result.scalars().unique())
     return {
         "date_label": local_start.strftime("%d/%m/%Y"),
+        "weekday_index": local_start.weekday(),
         "downloaded_count": sum(run.downloaded_count for run in runs),
         "failed_count": sum(run.failed_count for run in runs),
         "unavailable_count": sum(run.unavailable_count for run in runs),

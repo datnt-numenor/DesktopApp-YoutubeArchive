@@ -30,39 +30,53 @@
 
             <nav class="sidebar-nav">
                 <a class="sidebar-link" data-nav="dashboard" href="/">
-                    <i class="bi bi-grid-1x2"></i>
-                    <span>Dashboard</span>
+                    <i class="bi bi-house"></i>
+                    <span>Bảng điều khiển</span>
                 </a>
                 <a class="sidebar-link" data-nav="history" href="/history">
-                    <i class="bi bi-clock-history"></i>
-                    <span>History</span>
+                    <i class="bi bi-clock"></i>
+                    <span>Lịch sử</span>
                 </a>
                 <a class="sidebar-link" data-nav="settings" href="/settings">
-                    <i class="bi bi-sliders"></i>
-                    <span>Settings</span>
+                    <i class="bi bi-gear"></i>
+                    <span>Cài đặt</span>
                 </a>
             </nav>
 
             <div class="sidebar-footer">
                 <div class="sidebar-account">
                     <span class="account-avatar"><i class="bi bi-person"></i></span>
-                    <span class="account-email">Local owner</span>
+                    <span class="account-copy">
+                        <span class="account-email">Local owner</span>
+                        <small>Tài khoản cục bộ</small>
+                    </span>
                 </div>
                 <form method="post" action="/logout">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button class="sidebar-link sidebar-button" type="submit">
                         <i class="bi bi-box-arrow-right"></i>
-                        <span>Logout</span>
+                        <span>Đăng xuất</span>
                     </button>
                 </form>
             </div>
         </aside>
 
         <div class="app-workspace">
+            {% set current_path = request.url.path %}
+            {% if current_path.startswith('/history') %}
+            {% set section = {'eyebrow': 'Nhật ký đồng bộ', 'title': 'Lịch sử', 'subtitle': 'Theo dõi kết quả các lần đồng bộ tự động trong 30 ngày gần nhất.'} %}
+            {% elif current_path.startswith('/settings') %}
+            {% set section = {'eyebrow': 'Cài đặt hệ thống', 'title': 'Cài đặt', 'subtitle': 'Quản lý lịch trình đồng bộ và các tuỳ chọn lưu trữ, cập nhật ứng dụng.'} %}
+            {% elif current_path.startswith('/playlist/') %}
+            {% set section = {'eyebrow': 'Thư viện', 'title': 'Chi tiết playlist', 'subtitle': 'Nghe, tìm kiếm và quản lý các bài hát trong playlist.'} %}
+            {% else %}
+            {% set section = {'eyebrow': 'Kho lưu trữ YouTube của bạn', 'title': 'Bảng điều khiển', 'subtitle': 'Quản lý, đồng bộ và lưu trữ các playlist yêu thích từ YouTube.'} %}
+            {% endif %}
             <header class="app-topbar">
-                <div>
-                    <span class="eyebrow">Private archive</span>
-                    <h1 id="currentSectionLabel">{% if request.url.path.startswith('/history') %}History{% elif request.url.path.startswith('/settings') %}Settings{% elif request.url.path.startswith('/playlist/') %}Playlist detail{% else %}Dashboard{% endif %}</h1>
+                <div class="topbar-heading">
+                    <span class="eyebrow" id="currentSectionEyebrow">{{ section.eyebrow }}</span>
+                    <h1 id="currentSectionLabel">{{ section.title }}</h1>
+                    <p class="topbar-subtitle" id="currentSectionSubtitle">{{ section.subtitle }}</p>
                 </div>
                 {% set downloaded_count = topbar_stats.downloaded_count if topbar_stats is defined else 0 %}
                 {% set storage_percent = topbar_stats.storage_percent if topbar_stats is defined else 0 %}
@@ -70,22 +84,23 @@
                 {% set storage_used_label = topbar_stats.storage_used_label if topbar_stats is defined else (user.storage_used_bytes|bytes) %}
                 {% set storage_quota_label = topbar_stats.storage_quota_label if topbar_stats is defined else (user.storage_quota_bytes|bytes) %}
                 <div class="topbar-actions">
-                    <span class="topbar-stat" title="Downloaded media">
+                    <span class="topbar-stat" title="Số file MP3 đã tải xuống">
                         <span class="topbar-stat-icon"><i class="bi bi-cloud-arrow-down"></i></span>
                         <span class="topbar-stat-copy">
                             <strong>{{ downloaded_count }}</strong>
-                            <small>downloaded</small>
+                            <small>đã tải xuống</small>
                         </span>
                     </span>
-                    <span class="topbar-stat topbar-storage storage-{{ storage_level }}" style="--storage-percent: {{ storage_percent }}%;" title="{{ storage_used_label }} of {{ storage_quota_label }} used">
+                    <a class="topbar-stat topbar-storage storage-{{ storage_level }}" href="/settings" style="--storage-percent: {{ storage_percent }}%;" title="Đã dùng {{ storage_used_label }} / {{ storage_quota_label }}">
                         <span class="storage-ring" aria-hidden="true">
                             <span>{{ storage_percent }}%</span>
                         </span>
                         <span class="topbar-stat-copy">
-                            <strong>{{ storage_used_label }}</strong>
-                            <small>of {{ storage_quota_label }}</small>
+                            <strong>{{ storage_used_label }} <span class="topbar-stat-quota">/ {{ storage_quota_label }}</span></strong>
+                            <small>dung lượng đã dùng</small>
                         </span>
-                    </span>
+                        <i class="bi bi-chevron-right topbar-stat-chevron" aria-hidden="true"></i>
+                    </a>
                 </div>
             </header>
 
@@ -107,10 +122,10 @@
                 <section class="active-downloads d-none" id="activeDownloads">
                     <div class="active-downloads-header">
                         <div>
-                            <span class="eyebrow">Background tasks</span>
-                            <h2>Active downloads</h2>
+                            <span class="eyebrow">Tác vụ nền</span>
+                            <h2>Đang tải xuống</h2>
                         </div>
-                        <button class="btn icon-btn" type="button" id="activeDownloadsRefresh" title="Refresh downloads">
+                        <button class="btn icon-btn" type="button" id="activeDownloadsRefresh" title="Làm mới">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
                     </div>
@@ -131,7 +146,7 @@
                 </span>
             </a>
             <div class="public-nav-actions">
-                <a class="btn btn-neon" href="/login">Unlock</a>
+                <a class="btn btn-neon" href="/login">Mở khoá</a>
             </div>
         </div>
     </nav>

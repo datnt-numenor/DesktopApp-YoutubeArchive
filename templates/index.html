@@ -2,44 +2,78 @@
 
 {% block content %}
 <section class="dashboard-horizontal">
-    <form id="addPlaylistForm" class="dashboard-add-form">
-        <label class="visually-hidden" for="playlistUrl">YouTube playlist URL</label>
-        <div class="dashboard-url-field">
-            <i class="bi bi-link-45deg"></i>
-            <input id="playlistUrl" name="url" type="url" placeholder="Paste Playlist URL" required>
+    <section class="dash-card add-panel" aria-label="Thêm playlist">
+        <div class="add-panel-block add-panel-youtube">
+            <div class="add-panel-head">
+                <span class="add-panel-icon"><i class="bi bi-link-45deg"></i></span>
+                <div>
+                    <h2>Thêm playlist từ YouTube</h2>
+                    <p>Dán đường dẫn playlist để bắt đầu lưu trữ</p>
+                </div>
+            </div>
+            <form id="addPlaylistForm" class="dashboard-add-form">
+                <label class="visually-hidden" for="playlistUrl">URL playlist YouTube</label>
+                <div class="dashboard-url-field">
+                    <i class="bi bi-link-45deg"></i>
+                    <input id="playlistUrl" name="url" type="url" placeholder="Dán URL playlist YouTube vào đây..." required>
+                </div>
+                <button class="btn btn-gradient dashboard-add-button" type="submit">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>Thêm playlist</span>
+                </button>
+            </form>
         </div>
-        <button class="btn btn-neon dashboard-add-button" type="submit">
-            <i class="bi bi-plus-lg"></i>
-            <span>Add Playlist</span>
-        </button>
-    </form>
 
-    <form id="createCustomPlaylistForm" class="dashboard-add-form custom-playlist-form">
-        <label class="visually-hidden" for="customPlaylistTitle">Tên playlist tự tạo</label>
-        <div class="dashboard-url-field">
-            <i class="bi bi-music-note-list"></i>
-            <input id="customPlaylistTitle" name="title" type="text" maxlength="200" placeholder="Tên playlist tự tạo" required>
+        <div class="add-panel-divider" aria-hidden="true"><span>hoặc</span></div>
+
+        <div class="add-panel-block add-panel-custom">
+            <div class="add-panel-head">
+                <span class="add-panel-icon"><i class="bi bi-music-note-list"></i></span>
+                <div>
+                    <h2>Tạo playlist thủ công</h2>
+                    <p>Tạo playlist trống để thêm video sau</p>
+                </div>
+            </div>
+            <form id="createCustomPlaylistForm" class="dashboard-add-form custom-playlist-form">
+                <label class="visually-hidden" for="customPlaylistTitle">Tên playlist tự tạo</label>
+                <div class="dashboard-url-field">
+                    <i class="bi bi-music-note-list"></i>
+                    <input id="customPlaylistTitle" name="title" type="text" maxlength="200" placeholder="Tên playlist mới" required>
+                </div>
+                <button class="btn btn-outline-gradient dashboard-add-button" type="submit">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>Tạo playlist mới</span>
+                </button>
+            </form>
         </div>
-        <button class="btn btn-outline-secondary dashboard-add-button" type="submit">
-            <i class="bi bi-folder-plus"></i>
-            <span>Tạo playlist</span>
-        </button>
-    </form>
+    </section>
 
     <section class="today-sync-panel" aria-labelledby="todaySyncTitle">
         <button class="today-sync-head js-today-sync-toggle" type="button"
                 aria-expanded="false" aria-controls="todaySyncRuns">
             <span class="today-sync-heading">
-                <span class="eyebrow">{{ sync_history.date_label }}</span>
-                <span class="today-sync-title" id="todaySyncTitle">Cập nhật hôm nay</span>
+                <span class="today-sync-icon" aria-hidden="true"><i class="bi bi-calendar3"></i></span>
+                <span class="today-sync-heading-copy">
+                    <span class="today-sync-title" id="todaySyncTitle">Cập nhật hôm nay</span>
+                    <span class="today-sync-date">{{ weekday_names[sync_history.weekday_index] }}, {{ sync_history.date_label }}</span>
+                </span>
             </span>
             <span class="today-sync-totals">
-                <span class="sync-total downloaded"><strong>{{ sync_history.downloaded_count }}</strong> tải mới</span>
-                <span class="sync-total failed"><strong>{{ sync_history.failed_count }}</strong> lỗi</span>
-                <span class="sync-total unavailable"><strong>{{ sync_history.unavailable_count }}</strong> không còn trên YouTube</span>
+                <span class="sync-total downloaded">
+                    <span class="sync-total-icon"><i class="bi bi-download"></i></span>
+                    <span><strong>{{ sync_history.downloaded_count }}</strong><small>đã tải mới</small></span>
+                </span>
+                <span class="sync-total failed">
+                    <span class="sync-total-icon"><i class="bi bi-exclamation-triangle"></i></span>
+                    <span><strong>{{ sync_history.failed_count }}</strong><small>lỗi</small></span>
+                </span>
+                <span class="sync-total unavailable">
+                    <span class="sync-total-icon"><i class="bi bi-slash-circle"></i></span>
+                    <span><strong>{{ sync_history.unavailable_count }}</strong><small>không còn trên YouTube</small></span>
+                </span>
             </span>
             <span class="today-sync-toggle-icon" aria-hidden="true">
-                <i class="bi bi-chevron-down"></i>
+                <i class="bi bi-chevron-right"></i>
             </span>
         </button>
 
@@ -94,92 +128,111 @@
         </div>
     </section>
 
-    <div class="dashboard-library-head">
-        <div>
-            <span class="eyebrow">Library</span>
-            <h2>Saved Playlists</h2>
+    <section class="dash-card library-panel" aria-labelledby="libraryTitle">
+        <div class="dashboard-library-head">
+            <div class="library-heading">
+                <span class="library-icon" aria-hidden="true"><i class="bi bi-music-note-beamed"></i></span>
+                <div>
+                    <h2 id="libraryTitle">Thư viện</h2>
+                    <p>Các playlist đã lưu trữ của bạn</p>
+                </div>
+            </div>
+            <div class="library-tools">
+                <div class="dashboard-filter">
+                    <label class="visually-hidden" for="playlistSearch">Tìm playlist</label>
+                    <i class="bi bi-search"></i>
+                    <input id="playlistSearch" type="search" placeholder="Tìm playlist hoặc bài hát..." autocomplete="off">
+                </div>
+                <span class="library-count" id="playlistSearchCount">{{ playlists|length }} playlist</span>
+                <div class="view-toggle" role="group" aria-label="Kiểu hiển thị">
+                    <button class="view-toggle-btn is-active js-library-view" type="button" data-view="grid" title="Dạng lưới" aria-pressed="true">
+                        <i class="bi bi-grid-fill"></i>
+                    </button>
+                    <button class="view-toggle-btn js-library-view" type="button" data-view="list" title="Dạng danh sách" aria-pressed="false">
+                        <i class="bi bi-list-ul"></i>
+                    </button>
+                </div>
+            </div>
         </div>
-        <div class="dashboard-filter">
-            <label class="visually-hidden" for="playlistSearch">Search playlists</label>
-            <i class="bi bi-search"></i>
-            <input id="playlistSearch" type="search" placeholder="Tìm playlist hoặc bài hát" autocomplete="off">
-            <span id="playlistSearchCount">{{ playlists|length }} total</span>
-        </div>
-    </div>
 
-    <div class="dashboard-card-grid" id="playlistGrid">
-        {% for playlist in playlists %}
-        {% set archive_percent = playlist.archive_percent %}
-        {% set status_label = 'Custom' if playlist.source_type == 'CUSTOM' else ('Importing' if not playlist.video_count else ('Active' if playlist.auto_sync else 'Paused')) %}
-        <article class="dashboard-playlist-card js-playlist-card" data-title="{{ playlist.title|lower }}" data-url="{{ playlist.url|lower }}" data-source-type="{{ playlist.source_type }}">
-            <div class="dashboard-song-index d-none" aria-hidden="true">
-                {% for song in playlist.search_videos %}
-                <span data-title="{{ song.title|lower }}" data-channel="{{ song.channel_name|lower }}" data-source-id="{{ song.source_id|lower }}">{{ song.title }}</span>
-                {% endfor %}
-            </div>
-            <a class="dashboard-cover" href="/playlist/{{ playlist.id }}" aria-label="Open {{ playlist.title }}">
-                {% if playlist.thumbnail_url %}
-                <img src="{{ playlist.thumbnail_url }}" alt="" loading="lazy">
-                {% else %}
-                <span class="cover-art cover-tone-{{ loop.index0 % 6 }}">
-                    <i class="bi bi-play-fill"></i>
-                </span>
-                {% endif %}
-                <span class="dashboard-cover-shade"></span>
-                <span class="dashboard-video-count">
-                    <strong>{{ playlist.video_count }}</strong>
-                    <span>videos</span>
-                </span>
-            </a>
-
-            <div class="dashboard-card-title">
-                <h3><a href="/playlist/{{ playlist.id }}">{{ playlist.title }}</a></h3>
-                <p>{{ 'Playlist tự tạo' if playlist.source_type == 'CUSTOM' else (playlist.yt_playlist_id if playlist.yt_playlist_id is defined else playlist.url) }}</p>
-            </div>
-
-            <div class="dashboard-song-matches d-none" aria-live="polite"></div>
-
-            <div class="dashboard-card-meta">
-                <span>Archived: {{ archive_percent }}%</span>
-                <span>{{ playlist.last_synced.strftime('%Y-%m-%d %H:%M') if playlist.last_synced else 'Import pending' }}</span>
-            </div>
-
-            <div class="dashboard-progress" aria-hidden="true">
-                <span style="--archive-progress: {{ archive_percent }}%;"></span>
-            </div>
-
-            <div class="dashboard-card-meta">
-                <span>Status: <strong class="{{ 'text-success' if playlist.auto_sync else 'text-muted' }}">{{ status_label }}</strong></span>
-                <span>{{ playlist.downloaded_count }}/{{ playlist.video_count }} downloaded</span>
-            </div>
-
-            <div class="dashboard-card-actions">
-                <a class="btn btn-sm btn-ghost" href="/playlist/{{ playlist.id }}">
-                    <i class="bi bi-eye"></i>
-                    <span>View</span>
+        <div class="dashboard-card-grid" id="playlistGrid">
+            {% for playlist in playlists %}
+            {% set archive_percent = playlist.archive_percent %}
+            <article class="dashboard-playlist-card js-playlist-card" data-title="{{ playlist.title|lower }}" data-url="{{ playlist.url|lower }}" data-source-type="{{ playlist.source_type }}">
+                <div class="dashboard-song-index d-none" aria-hidden="true">
+                    {% for song in playlist.search_videos %}
+                    <span data-title="{{ song.title|lower }}" data-channel="{{ song.channel_name|lower }}" data-source-id="{{ song.source_id|lower }}">{{ song.title }}</span>
+                    {% endfor %}
+                </div>
+                <a class="dashboard-cover" href="/playlist/{{ playlist.id }}" aria-label="Mở {{ playlist.title }}">
+                    {% if playlist.thumbnail_url %}
+                    <img src="{{ playlist.thumbnail_url }}" alt="" loading="lazy">
+                    {% else %}
+                    <span class="cover-art cover-tone-{{ loop.index0 % 6 }}">
+                        <i class="bi bi-play-fill"></i>
+                    </span>
+                    {% endif %}
+                    <span class="dashboard-cover-shade"></span>
+                    <span class="dashboard-video-count">
+                        <strong>{{ playlist.video_count }}</strong>
+                        <span>video</span>
+                    </span>
                 </a>
-                <button class="btn btn-sm btn-delete js-delete" data-playlist-id="{{ playlist.id }}" title="Delete playlist">
-                    <i class="bi bi-trash"></i>
-                    <span>Delete</span>
-                </button>
-            </div>
 
-            {% if playlist.source_type == 'YOUTUBE' %}
-            <label class="auto-sync-toggle playlist-auto-sync form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="Enable scheduled sync for this playlist">
-                <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
-                <span class="auto-sync-copy">
-                    <i class="bi bi-arrow-repeat"></i>
-                    <span class="js-auto-sync-label">{{ 'Auto-sync on' if playlist.auto_sync else 'Auto-sync off' }}</span>
-                </span>
-            </label>
+                <div class="dashboard-card-body">
+                    <div class="dashboard-card-title">
+                        <h3><a href="/playlist/{{ playlist.id }}">{{ playlist.title }}</a></h3>
+                        <p><i class="bi bi-person"></i><span>{{ 'Playlist thủ công' if playlist.source_type == 'CUSTOM' else 'Playlist YouTube' }}</span></p>
+                        <p><i class="bi bi-clock"></i><span>{% if playlist.last_synced %}Cập nhật: {{ playlist.last_synced.strftime('%d/%m/%Y') }}{% elif not playlist.video_count and playlist.source_type == 'YOUTUBE' %}Đang chờ nhập{% else %}Chưa đồng bộ{% endif %}</span></p>
+                    </div>
+
+                    <div class="dashboard-song-matches d-none" aria-live="polite"></div>
+
+                    <div class="dashboard-archive">
+                        <div class="dashboard-progress" aria-hidden="true">
+                            <span style="--archive-progress: {{ archive_percent }}%;"></span>
+                        </div>
+                        <div class="dashboard-card-meta">
+                            <span>Đã lưu trữ {{ archive_percent }}%</span>
+                            <span>{{ playlist.downloaded_count }}/{{ playlist.video_count }}</span>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-card-actions">
+                        <a class="btn btn-outline-gradient btn-view-playlist" href="/playlist/{{ playlist.id }}">
+                            <i class="bi bi-play-fill"></i>
+                            <span>Xem playlist</span>
+                        </a>
+                        <div class="dropdown">
+                            <button class="btn card-menu-btn" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Tuỳ chọn">
+                                <i class="bi bi-chevron-down"></i>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-end card-menu">
+                                {% if playlist.source_type == 'YOUTUBE' %}
+                                <label class="auto-sync-toggle playlist-auto-sync form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="Bật đồng bộ theo lịch cho playlist này">
+                                    <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
+                                    <span class="auto-sync-copy">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                        <span class="js-auto-sync-label">{{ 'Tự đồng bộ: bật' if playlist.auto_sync else 'Tự đồng bộ: tắt' }}</span>
+                                    </span>
+                                </label>
+                                {% else %}
+                                <div class="playlist-custom-label"><i class="bi bi-folder2"></i> Playlist thủ công</div>
+                                {% endif %}
+                                <div class="dropdown-divider"></div>
+                                <button class="dropdown-item text-danger js-delete" type="button" data-playlist-id="{{ playlist.id }}">
+                                    <i class="bi bi-trash me-2"></i>Xoá playlist
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </article>
             {% else %}
-            <div class="playlist-custom-label"><i class="bi bi-folder-music"></i> Playlist thủ công</div>
-            {% endif %}
-        </article>
-        {% else %}
-        <div class="empty-state playlist-empty">No playlists archived yet.</div>
-        {% endfor %}
-        <div class="empty-state playlist-empty d-none" id="playlistSearchEmpty">No playlists match your search.</div>
-    </div>
+            <div class="empty-state playlist-empty">Chưa có playlist nào được lưu trữ.</div>
+            {% endfor %}
+            <div class="empty-state playlist-empty d-none" id="playlistSearchEmpty">Không có playlist nào khớp với từ khoá.</div>
+        </div>
+    </section>
 </section>
 {% endblock %}

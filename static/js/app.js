@@ -93,17 +93,18 @@ function renderYtDlpStatus(status) {
     const error = document.getElementById("ytDlpUpdateError");
     if (!version) return;
 
-    version.textContent = status.installed_version || "Not installed";
+    version.textContent = status.installed_version || "Chưa cài đặt";
     previous.textContent = status.previous_version
-        ? `Previous: ${status.previous_version}`
-        : "No previous version recorded";
-    result.textContent = status.last_error ? "Update check failed" : "Ready";
+        ? `Phiên bản trước: ${status.previous_version}`
+        : "Chưa từng có phiên bản trước";
+    result.textContent = status.last_error ? "Kiểm tra thất bại" : "Sẵn sàng";
+    result.closest(".status-dot-label")?.classList.toggle("is-error", Boolean(status.last_error));
     lastCheck.textContent = status.last_successful_check_at
-        ? `Last successful check: ${formatLocalTimestamp(status.last_successful_check_at)}`
-        : "Not checked yet";
+        ? `Lần kiểm tra: ${formatLocalTimestamp(status.last_successful_check_at)}`
+        : "Chưa kiểm tra";
     lastUpdated.textContent = status.last_updated_at
-        ? `Last updated: ${formatLocalTimestamp(status.last_updated_at)}`
-        : "No completed update recorded yet.";
+        ? `Cập nhật lần cuối: ${formatLocalTimestamp(status.last_updated_at)}`
+        : "Chưa có lần cập nhật nào.";
     if (status.last_error) {
         error.querySelector("span").textContent = status.last_error;
         error.classList.remove("d-none");
@@ -567,9 +568,30 @@ function updatePlaylistSearch() {
     });
 
     if (count) {
-        count.textContent = query ? `${visibleCount}/${cards.length} shown` : `${cards.length} total`;
+        count.textContent = query ? `${visibleCount}/${cards.length} playlist` : `${cards.length} playlist`;
     }
     if (empty) empty.classList.toggle("d-none", !query || visibleCount > 0);
+}
+
+const LIBRARY_VIEW_STORAGE_KEY = "ytarchive.libraryView";
+
+function readLibraryView() {
+    try {
+        return window.localStorage.getItem(LIBRARY_VIEW_STORAGE_KEY) === "list" ? "list" : "grid";
+    } catch {
+        return "grid";
+    }
+}
+
+function applyLibraryView(view) {
+    const grid = document.getElementById("playlistGrid");
+    if (!grid) return;
+    grid.classList.toggle("is-list", view === "list");
+    document.querySelectorAll(".js-library-view").forEach((button) => {
+        const active = button.dataset.view === view;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+    });
 }
 
 function updateLibrarySearch(input) {
@@ -584,7 +606,7 @@ function updateAutoSyncToggle(input) {
     const toggle = input.closest(".auto-sync-toggle");
     const label = toggle?.querySelector(".js-auto-sync-label");
     if (toggle) toggle.classList.toggle("is-enabled", input.checked);
-    if (label) label.textContent = input.checked ? "Auto-sync on" : "Auto-sync off";
+    if (label) label.textContent = input.checked ? "Tự đồng bộ: bật" : "Tự đồng bộ: tắt";
 }
 
 function syncAutoSyncToggleLabels() {
@@ -1044,6 +1066,7 @@ function initPlaylistTools() {
 
     if (playlistSearch) playlistSearch.addEventListener("input", updatePlaylistSearch);
     updatePlaylistSearch();
+    applyLibraryView(readLibraryView());
     document.querySelectorAll(".js-library-search").forEach((input) => {
         input.addEventListener("input", () => updateLibrarySearch(input));
     });
@@ -1089,15 +1112,35 @@ function collapseTopNav() {
 
 function sectionForPath(pathname) {
     if (pathname.startsWith("/history")) {
-        return { nav: "history", label: "History" };
+        return {
+            nav: "history",
+            eyebrow: "Nhật ký đồng bộ",
+            label: "Lịch sử",
+            subtitle: "Theo dõi kết quả các lần đồng bộ tự động trong 30 ngày gần nhất.",
+        };
     }
     if (pathname.startsWith("/settings")) {
-        return { nav: "settings", label: "Settings" };
+        return {
+            nav: "settings",
+            eyebrow: "Cài đặt hệ thống",
+            label: "Cài đặt",
+            subtitle: "Quản lý lịch trình đồng bộ và các tuỳ chọn lưu trữ, cập nhật ứng dụng.",
+        };
     }
     if (pathname.startsWith("/playlist/")) {
-        return { nav: "dashboard", label: "Playlist detail" };
+        return {
+            nav: "dashboard",
+            eyebrow: "Thư viện",
+            label: "Chi tiết playlist",
+            subtitle: "Nghe, tìm kiếm và quản lý các bài hát trong playlist.",
+        };
     }
-    return { nav: "dashboard", label: "Dashboard" };
+    return {
+        nav: "dashboard",
+        eyebrow: "Kho lưu trữ YouTube của bạn",
+        label: "Bảng điều khiển",
+        subtitle: "Quản lý, đồng bộ và lưu trữ các playlist yêu thích từ YouTube.",
+    };
 }
 
 function syncNavigationState() {
@@ -1107,6 +1150,10 @@ function syncNavigationState() {
     });
     const label = document.getElementById("currentSectionLabel");
     if (label) label.textContent = section.label;
+    const eyebrow = document.getElementById("currentSectionEyebrow");
+    if (eyebrow) eyebrow.textContent = section.eyebrow;
+    const subtitle = document.getElementById("currentSectionSubtitle");
+    if (subtitle) subtitle.textContent = section.subtitle;
 }
 
 async function navigateTo(url, options = {}) {
@@ -1370,12 +1417,12 @@ function renderOrphanedMedia(result) {
     panel.classList.remove("d-none");
     list.replaceChildren();
     if (!result.count) {
-        summary.textContent = "No unused MP3 files found.";
+        summary.textContent = "Không tìm thấy file MP3 nào không dùng đến.";
         deleteButton.classList.add("d-none");
         return;
     }
 
-    summary.textContent = `${result.count} unused MP3 file(s), ${formatFileSize(result.total_bytes)} in total.`;
+    summary.textContent = `${result.count} file MP3 không dùng đến, tổng ${formatFileSize(result.total_bytes)}.`;
     result.files.slice(0, ORPHAN_PREVIEW_LIMIT).forEach((file) => {
         const item = document.createElement("li");
         item.textContent = `${file.name} (${formatFileSize(file.size_bytes)})`;
@@ -1383,10 +1430,10 @@ function renderOrphanedMedia(result) {
     });
     if (result.count > ORPHAN_PREVIEW_LIMIT) {
         const more = document.createElement("li");
-        more.textContent = `+${result.count - ORPHAN_PREVIEW_LIMIT} more`;
+        more.textContent = `+${result.count - ORPHAN_PREVIEW_LIMIT} file khác`;
         list.appendChild(more);
     }
-    deleteButton.querySelector("span").textContent = `Delete ${result.count} file(s)`;
+    deleteButton.querySelector("span").textContent = `Xoá ${result.count} file`;
     deleteButton.classList.remove("d-none");
 }
 
@@ -1404,7 +1451,7 @@ async function findOrphanedMedia(button) {
 async function deleteOrphanedMedia(button) {
     if (!orphanedMediaFiles.length) return;
     const confirmed = window.confirm(
-        `Permanently delete ${orphanedMediaFiles.length} unused MP3 file(s)? This cannot be undone.`,
+        `Xoá vĩnh viễn ${orphanedMediaFiles.length} file MP3 không dùng đến? Thao tác này không thể hoàn tác.`,
     );
     if (!confirmed) return;
 
@@ -1426,6 +1473,62 @@ async function deleteOrphanedMedia(button) {
 }
 
 document.addEventListener("click", async (event) => {
+    const viewButton = event.target.closest(".js-library-view");
+    if (viewButton) {
+        const view = viewButton.dataset.view === "list" ? "list" : "grid";
+        try {
+            window.localStorage.setItem(LIBRARY_VIEW_STORAGE_KEY, view);
+        } catch {
+            // The view still switches for this page when storage is unavailable.
+        }
+        applyLibraryView(view);
+        storeCurrentPageSnapshot();
+        return;
+    }
+
+    const passwordToggle = event.target.closest(".js-toggle-password");
+    if (passwordToggle) {
+        const input = document.getElementById(passwordToggle.getAttribute("aria-controls"));
+        if (!input) return;
+        const reveal = input.type === "password";
+        input.type = reveal ? "text" : "password";
+        passwordToggle.setAttribute("aria-pressed", String(reveal));
+        passwordToggle.querySelector("i")?.classList.toggle("bi-eye", !reveal);
+        passwordToggle.querySelector("i")?.classList.toggle("bi-eye-slash", reveal);
+        return;
+    }
+
+    const ytDlpCheckButton = event.target.closest("#ytDlpCheckButton");
+    if (ytDlpCheckButton) {
+        ytDlpCheckButton.disabled = true;
+        ytDlpCheckButton.classList.add("is-busy");
+        try {
+            const status = await requestJson("/api/yt-dlp/check", { method: "POST", timeoutMs: 120000 });
+            renderYtDlpStatus(status);
+            invalidatePageCache();
+            showToast(status.last_error ? "Kiểm tra cập nhật thất bại" : "yt-dlp đang ở phiên bản mới nhất", status.last_error ? "danger" : "success");
+        } catch (error) {
+            showToast(error.message, "danger");
+        } finally {
+            ytDlpCheckButton.disabled = false;
+            ytDlpCheckButton.classList.remove("is-busy");
+        }
+        return;
+    }
+
+    const openFolderButton = event.target.closest("#openStorageFolderButton");
+    if (openFolderButton) {
+        openFolderButton.disabled = true;
+        try {
+            await requestJson("/settings/storage/open-folder", { method: "POST" });
+        } catch (error) {
+            showToast(error.message, "danger");
+        } finally {
+            openFolderButton.disabled = false;
+        }
+        return;
+    }
+
     const todaySyncToggle = event.target.closest(".js-today-sync-toggle");
     if (todaySyncToggle) {
         const panel = todaySyncToggle.closest(".today-sync-panel");
@@ -1558,7 +1661,7 @@ document.addEventListener("click", async (event) => {
 
     const deleteButton = event.target.closest(".js-delete");
     if (deleteButton) {
-        if (!window.confirm("Delete this playlist from the archive?")) return;
+        if (!window.confirm("Xoá playlist này khỏi kho lưu trữ? Các file MP3 vẫn được giữ lại.")) return;
         try {
             const data = await requestJson(`/playlist/${deleteButton.dataset.playlistId}`, { method: "DELETE" });
             invalidatePageCache();
