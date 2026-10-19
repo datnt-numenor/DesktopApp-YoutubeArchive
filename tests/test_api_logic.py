@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -423,6 +423,13 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
     async def fake_downloaded_count(_session, _owner_id: str):
         return 0
 
+    class FixedDate(date):
+        # The route clamps filters to the last 30 days, so pin "today" to keep the dates below valid.
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 13)
+
+    monkeypatch.setattr(app_module, "date", FixedDate)
     monkeypatch.setattr(app_module.crud, "get_scheduled_sync_history", fake_history)
     monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_downloaded_count)
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
@@ -478,3 +485,12 @@ def test_history_page_jump_clamps_page_and_uses_soft_navigation() -> None:
     assert "Math.min(totalPages, Math.max(1, requestedPage))" in script
     assert "new URLSearchParams(new FormData(form))" in script
     assert "await navigateTo(targetUrl.href, { useCache: false })" in script
+
+
+def test_toast_renders_messages_as_text_not_html() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    toast_function = script.split("function showToast", 1)[1].split("\nfunction ", 1)[0]
+
+    assert '<div class="toast-body"></div>' in toast_function
+    assert '.querySelector(".toast-body").textContent = String(message ?? "")' in toast_function
+    assert "${message}" not in toast_function

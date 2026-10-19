@@ -368,6 +368,16 @@ async def _get_video_by_youtube_id(session: AsyncSession, yt_video_id: str) -> V
     return result.scalar_one_or_none()
 
 
+async def _get_videos_by_youtube_ids(session: AsyncSession, yt_video_ids: list[str]) -> dict[str, Video]:
+    unique_ids = list(dict.fromkeys(yt_video_ids))
+    videos: dict[str, Video] = {}
+    # Chunk to stay well below SQLite's bound-parameter limit on large playlists.
+    for start in range(0, len(unique_ids), 500):
+        result = await session.execute(select(Video).where(Video.yt_video_id.in_(unique_ids[start : start + 500])))
+        videos.update((video.yt_video_id, video) for video in result.scalars())
+    return videos
+
+
 async def _get_playlist_video(session: AsyncSession, playlist_id: int, video_id: int) -> PlaylistVideo | None:
     result = await session.execute(
         select(PlaylistVideo).where(
@@ -536,19 +546,25 @@ async def sync_playlist_metadata(
                     if newly_unavailable is not None:
                         newly_unavailable.append(association.video)
 
+    videos_by_yt_id = await _get_videos_by_youtube_ids(
+        session, [video_data["yt_video_id"] for video_data in metadata["videos"]]
+    )
+    associations_by_video_id = {association.video_id: association for association in playlist.playlist_videos}
     for video_data in metadata["videos"]:
-        video = await _get_video_by_youtube_id(session, video_data["yt_video_id"])
+        video = videos_by_yt_id.get(video_data["yt_video_id"])
         if not video:
             video = _new_video_from_metadata(video_data)
             session.add(video)
             await session.flush()
+            videos_by_yt_id[video.yt_video_id] = video
         else:
             _apply_video_metadata(video, video_data)
 
-        association = await _get_playlist_video(session, playlist.id, video.id)
+        association = associations_by_video_id.get(video.id)
         if not association:
             association = PlaylistVideo(playlist_id=playlist.id, video_id=video.id)
             session.add(association)
+            associations_by_video_id[video.id] = association
 
         association.removed_from_youtube_playlist_at = None
         if not video_data.get("is_available_on_youtube", True):

@@ -83,7 +83,7 @@ except ImportError:  # pragma: no cover - optional production dependency
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-ASSET_VERSION = "20260831-ytdlp-status"
+ASSET_VERSION = "20261019-safe-toast"
 
 if settings.sentry_dsn and sentry_sdk:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment)
@@ -1154,9 +1154,7 @@ async def delete_playlist(
 
 
 @app.get("/stream/{video_id}")
-@limiter.limit("120/minute")
 async def stream_video(
-    request: Request,
     video_id: int,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
@@ -1175,9 +1173,7 @@ async def stream_video(
 
 
 @app.get("/thumbnail/{video_id}")
-@limiter.limit("240/minute")
 async def thumbnail_video(
-    request: Request,
     video_id: int,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),

@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -24,6 +24,22 @@ if _is_postgres:
     )
 
 engine = create_async_engine(settings.database_url, **_engine_kwargs)
+
+
+def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    """Enforce declared foreign keys and let the app and scheduled sync share the file."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=15000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
+
+
+if settings.database_url.startswith("sqlite"):
+    event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
+
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -94,3 +110,18 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0"))
             if "locked_until" not in user_columns:
                 await conn.execute(text("ALTER TABLE users ADD COLUMN locked_until DATETIME"))
+
+            # Before foreign keys were enforced, deleting a playlist left history rows pointing at
+            # its id, which SQLite could later reuse for a new playlist. Detach those rows now.
+            await conn.execute(
+                text(
+                    """
+                    UPDATE sync_runs SET playlist_id = NULL
+                    WHERE playlist_id IS NOT NULL
+                      AND (
+                        playlist_id NOT IN (SELECT id FROM playlists)
+                        OR started_at < (SELECT created_at FROM playlists WHERE playlists.id = sync_runs.playlist_id)
+                      )
+                    """
+                )
+            )

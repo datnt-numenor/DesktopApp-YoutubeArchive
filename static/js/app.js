@@ -7,10 +7,12 @@ function showToast(message, tone = "success") {
     toast.setAttribute("role", "alert");
     toast.innerHTML = `
         <div class="d-flex">
-            <div class="toast-body">${message}</div>
+            <div class="toast-body"></div>
             <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
         </div>
     `;
+    // Messages can contain YouTube titles, ID3 tags or yt-dlp output; never parse them as HTML.
+    toast.querySelector(".toast-body").textContent = String(message ?? "");
     area.appendChild(toast);
     const instance = new bootstrap.Toast(toast, { delay: 3500 });
     instance.show();
@@ -119,7 +121,7 @@ async function refreshYtDlpStatus() {
         const currentVersion = status.installed_version;
         const previousSeenVersion = window.localStorage.getItem(YTDLP_VERSION_STORAGE_KEY);
         if (currentVersion && previousSeenVersion && currentVersion !== previousSeenVersion) {
-            showToast(`yt-dlp updated: ${escapeHtml(previousSeenVersion)} → ${escapeHtml(currentVersion)}`);
+            showToast(`yt-dlp updated: ${previousSeenVersion} → ${currentVersion}`);
         }
         if (currentVersion) window.localStorage.setItem(YTDLP_VERSION_STORAGE_KEY, currentVersion);
         return status;

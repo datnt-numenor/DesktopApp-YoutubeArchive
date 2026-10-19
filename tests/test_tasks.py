@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import tasks
 import crud
 from downloader import DownloaderError
@@ -89,6 +92,58 @@ async def test_missing_playlist_video_probe_distinguishes_available_unavailable_
     assert result["blocked"]["state"] == "unknown"
 
 
+async def test_missing_playlist_video_probe_skips_already_classified_videos(monkeypatch) -> None:
+    owner = User(email="probe-skip@example.com")
+    playlist = Playlist(owner=owner, yt_playlist_id="probe-skip", title="Probe", url="https://example.com")
+    now = datetime.now(timezone.utc)
+    playlist.playlist_videos = [
+        PlaylistVideo(video=Video(yt_video_id="gone", title="Gone"), youtube_unavailable_at=now),
+        PlaylistVideo(video=Video(yt_video_id="moved", title="Moved"), removed_from_youtube_playlist_at=now),
+        PlaylistVideo(video=Video(yt_video_id="new-missing", title="New missing")),
+    ]
+    probed: list[str] = []
+
+    async def fake_extract(url: str):
+        probed.append(url.rsplit("=", 1)[-1])
+        raise DownloaderError("ERROR: Video unavailable")
+
+    monkeypatch.setattr(tasks, "extract_video_metadata", fake_extract)
+
+    result = await tasks._probe_missing_playlist_videos(playlist, {"videos": []})
+
+    assert probed == ["new-missing"]
+    assert set(result) == {"new-missing"}
+
+
+def test_finished_local_tasks_are_pruned_after_retention() -> None:
+    old = tasks.create_task_status(1, "owner", "Old", "mp3")
+    tasks._update_task(old.task_id, status="done")
+    tasks.task_registry[old.task_id].finished_at = (
+        datetime.now(timezone.utc) - tasks.FINISHED_TASK_RETENTION - timedelta(minutes=1)
+    ).isoformat()
+    running = tasks.create_task_status(2, "owner", "Running", "mp3")
+
+    tasks.create_task_status(3, "owner", "New", "mp3")
+
+    assert old.task_id not in tasks.task_registry
+    assert running.task_id in tasks.task_registry
+
+
+async def test_background_tasks_are_kept_until_they_finish() -> None:
+    release = asyncio.Event()
+
+    async def work() -> None:
+        await release.wait()
+
+    tasks._start_background_task(work())
+    assert len(tasks._background_tasks) == 1
+
+    release.set()
+    await asyncio.gather(*tasks._background_tasks)
+    await asyncio.sleep(0)
+    assert not tasks._background_tasks
+
+
 def test_active_task_listing_hides_finished_tasks() -> None:
     active = tasks.create_task_status(playlist_id=1, owner_id="owner-1", playlist_title="Piano", format_="mp3")
     finished = tasks.create_task_status(playlist_id=2, owner_id="owner-1", playlist_title="Old", format_="mp3")
@@ -104,12 +159,11 @@ def test_active_task_listing_hides_finished_tasks() -> None:
 def test_enqueue_sync_reuses_existing_active_task(monkeypatch) -> None:
     created_coroutines = []
 
-    def fake_create_task(coro):
+    def fake_start_background_task(coro):
         created_coroutines.append(coro)
         coro.close()
-        return object()
 
-    monkeypatch.setattr(tasks.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(tasks, "_start_background_task", fake_start_background_task)
 
     first = tasks.enqueue_local_sync(playlist_id=1, owner_id="owner-1", playlist_title="Piano", format_="mp3")
     second = tasks.enqueue_local_sync(playlist_id=1, owner_id="owner-1", playlist_title="Piano", format_="mp3")
@@ -121,12 +175,11 @@ def test_enqueue_sync_reuses_existing_active_task(monkeypatch) -> None:
 def test_enqueue_metadata_import_reuses_existing_active_task(monkeypatch) -> None:
     created_coroutines = []
 
-    def fake_create_task(coro):
+    def fake_start_background_task(coro):
         created_coroutines.append(coro)
         coro.close()
-        return object()
 
-    monkeypatch.setattr(tasks.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(tasks, "_start_background_task", fake_start_background_task)
 
     first = tasks.enqueue_local_metadata_import(playlist_id=1, owner_id="owner-1", playlist_title="Importing")
     second = tasks.enqueue_local_metadata_import(playlist_id=1, owner_id="owner-1", playlist_title="Importing")

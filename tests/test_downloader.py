@@ -120,3 +120,28 @@ def test_unavailable_video_is_not_retried(monkeypatch, tmp_path: Path) -> None:
         downloader._download_video_sync("private123", tmp_path)
 
     assert attempts == 1
+
+
+@pytest.mark.parametrize("url", ["--exec=calc", "file:///C:/Windows/win.ini", "youtube.com/watch?v=abc"])
+def test_metadata_extraction_rejects_non_web_urls_before_running_ytdlp(monkeypatch, url: str) -> None:
+    def fail_if_called(_arguments):
+        raise AssertionError("yt-dlp must not run for an invalid URL")
+
+    monkeypatch.setattr(downloader, "_run_ytdlp_json", fail_if_called)
+
+    with pytest.raises(downloader.DownloaderError):
+        downloader._extract_video_sync(url)
+
+
+def test_metadata_extraction_separates_url_from_ytdlp_options(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(arguments):
+        captured["arguments"] = arguments
+        return {"id": "abc", "title": "Song"}
+
+    monkeypatch.setattr(downloader, "_run_ytdlp_json", fake_run)
+
+    downloader._extract_video_sync("https://www.youtube.com/watch?v=abc")
+
+    assert captured["arguments"][-2:] == ["--", "https://www.youtube.com/watch?v=abc"]

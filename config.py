@@ -1,4 +1,5 @@
 import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -14,6 +15,39 @@ BASE_DIR = Path(__file__).resolve().parent
 LOCAL_DATA_DIR = Path(os.environ.get("YTARCHIVE_DESKTOP_DATA_DIR", BASE_DIR / "data"))
 DEFAULT_SQLITE_URL = f"sqlite+aiosqlite:///{(LOCAL_DATA_DIR / 'ytarchive.db').as_posix()}"
 ENV_FILE = Path(os.environ.get("ENV_FILE", BASE_DIR / ".env"))
+
+
+SECRET_KEY_PATH = LOCAL_DATA_DIR / "secret.key"
+# Values shipped in source or .env.example; anyone can read them, so they must never sign cookies.
+PUBLIC_PLACEHOLDER_SECRET_KEYS = {
+    "change-me-in-production-min-32-chars",
+    "replace-with-any-long-random-local-secret",
+}
+
+
+def load_or_create_local_secret(path: Path = SECRET_KEY_PATH) -> str:
+    """Return a per-installation signing key, creating it once and sharing it across processes."""
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if len(existing) >= 32:
+            return existing
+    except OSError:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_urlsafe(48)
+    try:
+        # O_EXCL: if the app and the scheduled sync start together, only one key is written.
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        existing = path.read_text(encoding="utf-8").strip()
+        if len(existing) >= 32:
+            return existing
+        path.write_text(secret, encoding="utf-8")
+        return secret
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(secret)
+    return secret
 
 
 def sqlite_path_from_url(database_url: str) -> Path | None:
@@ -126,6 +160,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    if settings.secret_key in PUBLIC_PLACEHOLDER_SECRET_KEYS:
+        settings.secret_key = load_or_create_local_secret()
     if sqlite_path := sqlite_path_from_url(settings.database_url):
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     settings.downloads_dir.mkdir(parents=True, exist_ok=True)

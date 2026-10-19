@@ -51,6 +51,14 @@ def canonicalize_playlist_url(url: str) -> str:
     return url
 
 
+def _require_web_url(url: str) -> str:
+    """Reject anything yt-dlp could interpret as an option or a local file."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise DownloaderError("Only http(s) YouTube URLs are supported.")
+    return url.strip()
+
+
 def extract_playlist_id_from_url(url: str) -> str:
     parsed = urlparse(url)
     playlist_ids = parse_qs(parsed.query).get("list")
@@ -166,8 +174,8 @@ def _run_ytdlp_json(arguments: list[str]) -> dict[str, Any]:
 
 
 def _extract_playlist_sync(url: str) -> dict[str, Any]:
-    playlist_url = canonicalize_playlist_url(url)
-    info = _run_ytdlp_json(["--flat-playlist", "--ignore-errors", "--yes-playlist", playlist_url])
+    playlist_url = _require_web_url(canonicalize_playlist_url(url))
+    info = _run_ytdlp_json(["--flat-playlist", "--ignore-errors", "--yes-playlist", "--", playlist_url])
 
     if not info:
         raise DownloaderError("yt-dlp did not return playlist metadata")
@@ -190,7 +198,7 @@ async def extract_playlist_metadata(url: str) -> dict[str, Any]:
 
 
 def _extract_video_sync(url: str) -> dict[str, Any]:
-    info = _run_ytdlp_json(["--no-playlist", url])
+    info = _run_ytdlp_json(["--no-playlist", "--", _require_web_url(url)])
     if not info:
         raise DownloaderError("yt-dlp did not return video metadata")
     metadata = _normalize_video(info)
@@ -270,6 +278,7 @@ def _download_once(video_id: str, output_dir: Path, *, force_update: bool = Fals
             "192K",
             "--output",
             outtmpl,
+            "--",
             url,
         ],
         force_update=force_update,
