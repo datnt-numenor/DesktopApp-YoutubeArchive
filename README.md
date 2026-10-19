@@ -79,7 +79,9 @@ Copy-Item .env.example .env
 
 ## Đồng bộ tự động khi ứng dụng đóng
 
-Sau khi đã chạy ứng dụng ít nhất một lần và tạo `.venv`, cài lịch chạy hằng ngày:
+Đồng bộ tự động chỉ chạy qua Windows Task Scheduler; ứng dụng không còn lịch nội bộ riêng.
+Sau khi đã chạy ứng dụng ít nhất một lần và tạo `.venv`, mở Settings, chọn giờ và bấm
+**Install daily sync**, hoặc cài bằng PowerShell:
 
 ```powershell
 .\scripts\install-scheduled-sync.ps1 -Time "12:00"

@@ -13,6 +13,7 @@ from main import (
     calculate_storage_level,
     healthz,
     hide_playlist_video,
+    install_sync_schedule,
     restore_playlist_video,
     update_desktop_password,
     update_playlist_auto_sync,
@@ -256,6 +257,53 @@ async def test_update_sync_schedule_updates_windows_task(monkeypatch) -> None:
 
     assert response.status == "ok"
     assert response.message == "Daily MP3 sync updated to 12:00; next run 2026-08-07 12:00"
+
+
+async def test_install_sync_schedule_registers_windows_task(monkeypatch) -> None:
+    installed = []
+
+    def fake_install(value: str):
+        installed.append(value)
+        return SimpleNamespace(time=value, state="Ready", next_run_time="2026-10-20 07:15")
+
+    monkeypatch.setattr("main.install_scheduled_sync", fake_install)
+
+    response = await install_sync_schedule.__wrapped__(
+        request=None,
+        payload=SyncScheduleRequest(time="07:15"),
+        _current_user=SimpleNamespace(id="owner-1"),
+        _csrf=None,
+    )
+
+    assert installed == ["07:15"]
+    assert response.message == "Daily MP3 sync installed at 07:15; next run 2026-10-20 07:15"
+
+
+async def test_install_sync_schedule_reports_scheduler_errors(monkeypatch) -> None:
+    def failing_install(_value: str):
+        raise app_module.WindowsSchedulerError("Access is denied")
+
+    monkeypatch.setattr("main.install_scheduled_sync", failing_install)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await install_sync_schedule.__wrapped__(
+            request=None,
+            payload=SyncScheduleRequest(time="07:15"),
+            _current_user=SimpleNamespace(id="owner-1"),
+            _csrf=None,
+        )
+
+    assert error.value.status_code == 503
+    assert error.value.detail == "Access is denied"
+
+
+def test_settings_offers_install_button_when_task_is_missing() -> None:
+    template = (Path(__file__).resolve().parents[1] / "templates" / "settings.html").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="syncScheduleForm"' in template and "data-installed=" in template
+    assert "Install daily sync" in template
+    assert '"/settings/sync-schedule/install"' in script
 
 
 async def test_update_desktop_password_endpoint_changes_real_password(session) -> None:

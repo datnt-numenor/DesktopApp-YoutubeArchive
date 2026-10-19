@@ -38,7 +38,6 @@ from downloader import canonicalize_playlist_url, extract_playlist_id_from_url
 from media_import import receive_mp3_upload
 from managed_ytdlp import get_ytdlp_status
 from models import PlaylistSource, SyncRunStatus, User
-from scheduler import scheduler, shutdown_scheduler, start_scheduler
 from schemas import (
     BaseResponse,
     CustomPlaylistCreateRequest,
@@ -62,7 +61,12 @@ from tasks import (
     get_task_status,
     list_task_statuses,
 )
-from windows_scheduler import WindowsSchedulerError, get_scheduled_sync_info, set_scheduled_sync_time
+from windows_scheduler import (
+    WindowsSchedulerError,
+    get_scheduled_sync_info,
+    install_scheduled_sync,
+    set_scheduled_sync_time,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,16 +84,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         users = list((await cleanup_session.execute(select(User))).scalars().all())
         for user in users:
             await crud.recalculate_user_storage(cleanup_session, user, settings.downloads_dir.parent)
-    try:
-        await asyncio.to_thread(get_scheduled_sync_info)
-        logger.info("Windows scheduled sync is installed; skipping the in-app scheduler")
-    except WindowsSchedulerError:
-        logger.info("Windows scheduled sync is unavailable; starting the in-app scheduler")
-        start_scheduler()
-    try:
-        yield
-    finally:
-        shutdown_scheduler()
+    # Automatic sync is owned by Windows Task Scheduler, which also runs while the app is closed.
+    yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -748,11 +744,25 @@ async def update_sync_schedule(
     except WindowsSchedulerError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    if scheduler.running and scheduler.get_job("auto_sync_playlists"):
-        hour, minute = (int(part) for part in payload.time.split(":"))
-        scheduler.reschedule_job("auto_sync_playlists", trigger="cron", hour=hour, minute=minute)
     next_run = f"; next run {scheduled_sync.next_run_time}" if scheduled_sync.next_run_time else ""
     return BaseResponse(status="ok", message=f"Daily MP3 sync updated to {payload.time}{next_run}")
+
+
+@app.post("/settings/sync-schedule/install", response_model=BaseResponse)
+@limiter.limit("10/minute")
+async def install_sync_schedule(
+    request: Request,
+    payload: SyncScheduleRequest,
+    _current_user: User = Depends(get_current_user),
+    _csrf: None = Depends(require_csrf),
+) -> BaseResponse:
+    try:
+        scheduled_sync = await asyncio.to_thread(install_scheduled_sync, payload.time)
+    except WindowsSchedulerError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    next_run = f"; next run {scheduled_sync.next_run_time}" if scheduled_sync.next_run_time else ""
+    return BaseResponse(status="ok", message=f"Daily MP3 sync installed at {payload.time}{next_run}")
 
 
 @app.get("/task/{task_id}/status", response_model=TaskStatusResponse)

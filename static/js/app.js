@@ -1269,17 +1269,24 @@ document.addEventListener("submit", async (event) => {
 
     if (event.target.id === "syncScheduleForm") {
         event.preventDefault();
+        const form = event.target;
         const input = document.getElementById("syncTime");
+        const button = form.querySelector('button[type="submit"]');
+        const installed = form.dataset.installed === "true";
+        if (button) button.disabled = true;
         try {
-            const data = await requestJson("/settings/sync-schedule", {
-                method: "PATCH",
+            const data = await requestJson(installed ? "/settings/sync-schedule" : "/settings/sync-schedule/install", {
+                method: installed ? "PATCH" : "POST",
                 body: JSON.stringify({ time: input.value }),
+                timeoutMs: 45000,
             });
             invalidatePageCache();
             showToast(data.message || "Settings saved");
             await refreshCurrentPage();
         } catch (error) {
             showToast(error.message, "danger");
+        } finally {
+            if (button) button.disabled = false;
         }
     }
 

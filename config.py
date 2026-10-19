@@ -76,7 +76,6 @@ class Settings(BaseSettings):
     default_playlist_quota: int = 50
     default_storage_quota_gb: int = 20
 
-    sync_interval_hours: int = Field(default=12, ge=1, le=168)
     yt_sleep_min_seconds: int = Field(default=5, ge=0)
     yt_sleep_max_seconds: int = Field(default=15, ge=0)
 

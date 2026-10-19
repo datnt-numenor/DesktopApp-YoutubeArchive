@@ -7,9 +7,9 @@
         <p class="text-muted">Scheduler and local archive preferences.</p>
     </div>
     <div class="panel">
-        <form id="syncScheduleForm" class="settings-form">
+        <form id="syncScheduleForm" class="settings-form" data-installed="{{ 'true' if scheduled_sync else 'false' }}">
             <label class="form-label" for="syncTime">Daily MP3 sync time</label>
-            <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required {{ 'disabled' if not scheduled_sync else '' }}>
+            <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required>
             {% if scheduled_sync %}
             <div class="small text-muted mt-2">
                 Windows Task Scheduler: <strong>{{ scheduled_sync.state }}</strong>
@@ -34,9 +34,17 @@
             <div class="download-error mt-2">
                 <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or 'Windows scheduled sync is not installed.' }}
             </div>
+            <div class="small text-muted mt-2">
+                Automatic sync runs through Windows Task Scheduler, including while the app is closed.
+                Choose a time and install the daily task.
+            </div>
             {% endif %}
-            <button class="btn btn-danger mt-3" type="submit" {{ 'disabled' if not scheduled_sync else '' }}>
+            <button class="btn btn-danger mt-3" type="submit">
+                {% if scheduled_sync %}
                 <i class="bi bi-save me-1"></i>Save
+                {% else %}
+                <i class="bi bi-calendar-plus me-1"></i>Install daily sync
+                {% endif %}
             </button>
         </form>
     </div>

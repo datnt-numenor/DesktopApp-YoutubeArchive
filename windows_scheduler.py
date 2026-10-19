@@ -96,3 +96,9 @@ def get_scheduled_sync_info() -> ScheduledSyncInfo:
 def set_scheduled_sync_time(time_value: str) -> ScheduledSyncInfo:
     _run_script("update-scheduled-sync.ps1", "-Time", time_value)
     return get_scheduled_sync_info()
+
+
+def install_scheduled_sync(time_value: str) -> ScheduledSyncInfo:
+    """Register the daily task for the current user; re-registering replaces an existing task."""
+    _run_script("install-scheduled-sync.ps1", "-Time", time_value)
+    return get_scheduled_sync_info()
