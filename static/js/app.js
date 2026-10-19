@@ -171,7 +171,7 @@ function isCacheableNavigationUrl(url) {
     if (nextUrl.pathname.startsWith("/stream/")) return false;
     if (nextUrl.pathname.startsWith("/task/")) return false;
     if (nextUrl.pathname.startsWith("/api/")) return false;
-    if (nextUrl.pathname === "/login" || nextUrl.pathname === "/register") return false;
+    if (nextUrl.pathname === "/login") return false;
     return true;
 }
 
@@ -219,7 +219,7 @@ function storeCurrentPageSnapshot() {
 
 function buildPageSnapshot(response, html, requestedUrl) {
     const finalUrl = new URL(response.url || requestedUrl.href, window.location.href);
-    if (finalUrl.pathname === "/login" || finalUrl.pathname === "/register") {
+    if (finalUrl.pathname === "/login") {
         return { redirectUrl: finalUrl.href };
     }
 
@@ -1076,7 +1076,7 @@ function shouldHandleSoftNavigation(event, link) {
     const url = new URL(rawHref, window.location.href);
     if (url.origin !== window.location.origin) return false;
     if (url.pathname.startsWith("/stream/")) return false;
-    if (url.pathname === "/login" || url.pathname === "/register") return false;
+    if (url.pathname === "/login") return false;
 
     return true;
 }
@@ -1093,9 +1093,6 @@ function sectionForPath(pathname) {
     }
     if (pathname.startsWith("/settings")) {
         return { nav: "settings", label: "Settings" };
-    }
-    if (pathname.startsWith("/admin")) {
-        return { nav: "admin", label: "Admin" };
     }
     if (pathname.startsWith("/playlist/")) {
         return { nav: "dashboard", label: "Playlist detail" };

@@ -29,13 +29,7 @@ AUTH_WINDOW_HEIGHT = 650
 AUTH_WINDOW_MIN_SIZE = (760, 560)
 SERVER_RESTART_DELAY_SECONDS = 1.0
 DESKTOP_LOG_PATH = LOCAL_DATA_DIR / "logs" / "desktop.log"
-AUTH_PATHS = {
-    "/login",
-    "/register",
-    "/forgot-password",
-    "/reset-password",
-    "/verify-email",
-}
+AUTH_PATHS = {"/login"}
 logger = logging.getLogger("desktop")
 
 

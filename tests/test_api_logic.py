@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from main import (
     active_tasks,
     add_playlist,
     calculate_storage_level,
-    collect_system_status,
+    healthz,
     hide_playlist_video,
     restore_playlist_video,
     update_desktop_password,
@@ -44,10 +45,8 @@ def test_storage_warning_thresholds_and_mp3_only_request() -> None:
 
 
 @pytest.fixture(autouse=True)
-def local_task_backend(monkeypatch) -> None:
-    monkeypatch.setattr(tasks.settings, "task_backend", "local")
+def clear_task_registry() -> None:
     tasks.task_registry.clear()
-    tasks._redis = None
 
 
 async def test_active_tasks_endpoint_logic_returns_only_current_user_tasks() -> None:
@@ -187,30 +186,11 @@ def test_playlist_detail_switches_between_visible_and_hidden_views(monkeypatch) 
     assert "Đã ẩn" in hidden_response.text
 
 
-async def test_collect_system_status_reports_counts(session, monkeypatch) -> None:
-    monkeypatch.setattr("main.settings.task_backend", "local")
-    monkeypatch.setattr("main.settings.storage_backend", "local")
-    monkeypatch.setattr("main.settings.registration_invite_code", "invite")
-    monkeypatch.setattr("main.settings.auth_cookie_secure", True)
+async def test_healthz_reports_database_status(session) -> None:
+    response = await healthz(session)
 
-    owner = User(id="owner-1", email="owner@example.com")
-    playlist = Playlist(id=1, owner_id=owner.id, yt_playlist_id="PL123", title="Piano", url="https://example.test")
-    video = Video(id=1, yt_video_id="abc123", title="Song", channel_name="Channel", status=VideoStatus.DOWNLOADED)
-    association = PlaylistVideo(playlist_id=playlist.id, video_id=video.id, local_file_path="downloads/song.mp3")
-    session.add_all([owner, playlist, video, association])
-    await session.commit()
-
-    status = await collect_system_status(session, include_counts=True)
-
-    assert status["checks"]["database"]["ok"]
-    assert status["checks"]["tasks"]["label"] == "local"
-    assert status["checks"]["public_auth"]["ok"]
-    assert status["counts"] == {
-        "users": 1,
-        "playlists": 1,
-        "videos": 1,
-        "saved_media": 1,
-    }
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"status": "ok", "database": True}
 
 
 async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch) -> None:
@@ -225,7 +205,6 @@ async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch)
         return SimpleNamespace(task_id="task-1")
 
     monkeypatch.setattr("main.enqueue_metadata_import", fake_enqueue)
-    monkeypatch.setattr("main.settings.task_backend", "local")
 
     response = await add_playlist.__wrapped__(
         request=None,

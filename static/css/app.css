@@ -1124,8 +1124,7 @@ a:hover {
 }
 
 .hero-metrics,
-.quota-grid,
-.stats-grid {
+.quota-grid {
     display: grid;
     gap: 12px;
 }
@@ -1960,20 +1959,6 @@ a:hover {
     border-radius: 8px;
 }
 
-.admin-user-form {
-    align-items: center;
-    display: grid;
-    gap: 6px;
-    grid-template-columns: auto 88px 88px auto;
-    justify-content: end;
-}
-
-.ops-grid {
-    display: grid;
-    gap: 16px;
-    grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr);
-}
-
 .status-grid {
     display: grid;
     gap: 12px;
@@ -2017,10 +2002,6 @@ a:hover {
 .config-list strong {
     font-size: .92rem;
     overflow-wrap: anywhere;
-}
-
-.stats-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .global-player-bar {
@@ -2273,7 +2254,6 @@ body.has-player-bar .toast-container {
     .dashboard-hero,
     .dashboard-layout,
     .playlist-controls,
-    .ops-grid,
     .custom-source-grid,
     .history-filters {
         grid-template-columns: 1fr;
@@ -2293,8 +2273,7 @@ body.has-player-bar .toast-container {
     }
 
     .hero-metrics,
-    .status-grid,
-    .stats-grid {
+    .status-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -2392,9 +2371,7 @@ body.has-player-bar .toast-container {
     .sidebar-footer,
     .hero-metrics,
     .quota-grid,
-    .status-grid,
-    .stats-grid,
-    .admin-user-form {
+    .status-grid {
         grid-template-columns: 1fr;
     }
 

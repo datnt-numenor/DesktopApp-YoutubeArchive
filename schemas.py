@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class PlaylistAddRequest(BaseModel):
@@ -35,16 +35,6 @@ class PlaylistAutoSyncRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=8)
-
-
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8)
-
-
-class UserUpdate(BaseModel):
-    email: EmailStr | None = None
-    password: str | None = Field(default=None, min_length=8)
 
 
 class BaseResponse(BaseModel):
@@ -153,13 +143,3 @@ class PlaylistDetailResponse(BaseModel):
     videos: list[VideoSchema]
     hidden_count: int = 0
     source_type: str = "YOUTUBE"
-
-
-class UserSchema(BaseModel):
-    id: str
-    email: EmailStr
-    storage_used_bytes: int
-    storage_quota_bytes: int
-    playlist_quota: int
-
-    model_config = {"from_attributes": True}

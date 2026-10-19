@@ -35,17 +35,11 @@ def main() -> None:
         with urlopen(f"http://{HOST}:{port}/healthz", timeout=10) as response:
             health_status = response.status
             health_payload = json.load(response)
-        with urlopen(f"http://{HOST}:{port}/register", timeout=10) as response:
-            registration_final_url = response.geturl()
-        with urlopen(f"http://{HOST}:{port}/forgot-password", timeout=10) as response:
-            recovery_final_url = response.geturl()
 
         assert login_status == 200
         assert 'name="email"' not in login_html
         assert 'name="password"' in login_html
         assert "/register" not in login_html
-        assert registration_final_url.endswith("/login")
-        assert recovery_final_url.endswith("/login")
         assert health_status == 200
         assert health_payload["status"] == "ok"
         print(

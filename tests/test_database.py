@@ -26,7 +26,6 @@ async def test_init_db_adds_sync_state_columns_to_legacy_playlist_video(tmp_path
 
     monkeypatch.setattr(database, "engine", legacy_engine)
     monkeypatch.setattr(database.settings, "database_url", database_url)
-    monkeypatch.setattr(database.settings, "environment", "development")
 
     await database.init_db()
 
@@ -45,7 +44,6 @@ async def test_sqlite_foreign_keys_detach_history_from_deleted_playlist(tmp_path
     event.listen(test_engine.sync_engine, "connect", database.configure_sqlite_connection)
     monkeypatch.setattr(database, "engine", test_engine)
     monkeypatch.setattr(database.settings, "database_url", database_url)
-    monkeypatch.setattr(database.settings, "environment", "development")
     await database.init_db()
 
     async with test_engine.begin() as conn:
@@ -85,7 +83,6 @@ async def test_init_db_detaches_history_left_by_reused_playlist_ids(tmp_path: Pa
     legacy_engine = create_async_engine(database_url)
     monkeypatch.setattr(database, "engine", legacy_engine)
     monkeypatch.setattr(database.settings, "database_url", database_url)
-    monkeypatch.setattr(database.settings, "environment", "development")
     await database.init_db()
 
     # Simulate the old behaviour: no foreign keys, so history kept the id of a deleted playlist

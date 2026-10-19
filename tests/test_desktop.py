@@ -170,5 +170,5 @@ def test_desktop_window_maximizes_after_login_and_restores_after_logout() -> Non
 
 def test_desktop_auth_routes_are_detected() -> None:
     assert desktop.is_auth_url("http://127.0.0.1:8765/login?next=/")
-    assert desktop.is_auth_url("http://127.0.0.1:8765/reset-password?token=abc")
+    assert not desktop.is_auth_url("http://127.0.0.1:8765/reset-password?token=abc")
     assert not desktop.is_auth_url("http://127.0.0.1:8765/settings")

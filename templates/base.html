@@ -62,7 +62,7 @@
             <header class="app-topbar">
                 <div>
                     <span class="eyebrow">Private archive</span>
-                    <h1 id="currentSectionLabel">{% if request.url.path.startswith('/history') %}History{% elif request.url.path.startswith('/settings') %}Settings{% elif request.url.path.startswith('/admin') %}Admin{% elif request.url.path.startswith('/playlist/') %}Playlist detail{% else %}Dashboard{% endif %}</h1>
+                    <h1 id="currentSectionLabel">{% if request.url.path.startswith('/history') %}History{% elif request.url.path.startswith('/settings') %}Settings{% elif request.url.path.startswith('/playlist/') %}Playlist detail{% else %}Dashboard{% endif %}</h1>
                 </div>
                 {% set downloaded_count = topbar_stats.downloaded_count if topbar_stats is defined else 0 %}
                 {% set storage_percent = topbar_stats.storage_percent if topbar_stats is defined else 0 %}

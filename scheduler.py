@@ -6,7 +6,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import crud
 from config import settings
 from database import AsyncSessionLocal
-from tasks import enqueue_sync, sync_playlist_by_id
+from tasks import sync_playlist_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,7 @@ async def auto_sync_job() -> None:
 
         for playlist in playlists:
             try:
-                if settings.use_celery_tasks:
-                    enqueue_sync(playlist.id, playlist.owner_id, playlist.title, "mp3")
-                else:
-                    await sync_playlist_by_id(playlist.id, format_="mp3", history_source="in_app")
+                await sync_playlist_by_id(playlist.id, format_="mp3", history_source="in_app")
             except Exception:
                 logger.exception("Scheduled sync failed for playlist %s", playlist.id)
 

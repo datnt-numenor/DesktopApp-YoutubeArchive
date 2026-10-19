@@ -11,19 +11,7 @@ class Base(DeclarativeBase):
     pass
 
 
-_is_postgres = settings.database_url.startswith("postgresql")
-
-_engine_kwargs: dict = {"echo": False}
-if _is_postgres:
-    _engine_kwargs.update(
-        pool_size=5,
-        pool_recycle=300,
-        # Neon serverless PostgreSQL requires statement_cache_size=0 with asyncpg
-        # to avoid "prepared statement already exists" errors through their pooler.
-        connect_args={"statement_cache_size": 0},
-    )
-
-engine = create_async_engine(settings.database_url, **_engine_kwargs)
+engine = create_async_engine(settings.database_url, echo=False)
 
 
 def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
@@ -50,9 +38,6 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     import models  # noqa: F401
-
-    if settings.environment == "production":
-        return
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
