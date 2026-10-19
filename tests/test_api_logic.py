@@ -35,6 +35,8 @@ from schemas import (
 import auth
 import tasks
 
+LOCAL_BASE_URL = "http://127.0.0.1:8765"
+
 
 def test_storage_warning_thresholds_and_mp3_only_request() -> None:
     assert calculate_storage_level(79) == "normal"
@@ -176,8 +178,8 @@ def test_playlist_detail_switches_between_visible_and_hidden_views(monkeypatch) 
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        visible_response = TestClient(app_module.app).get("/playlist/1")
-        hidden_response = TestClient(app_module.app).get("/playlist/1?hidden=1")
+        visible_response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/playlist/1")
+        hidden_response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/playlist/1?hidden=1")
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -370,7 +372,7 @@ def test_dashboard_renders_horizontal_layout(monkeypatch) -> None:
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get("/")
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/")
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -463,7 +465,7 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get(
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get(
             f"/history?date_from=2026-08-01&date_to=2026-08-13&playlist_id=7&status=PARTIAL&page={expected_page}"
         )
     finally:
@@ -498,7 +500,7 @@ def test_scheduled_history_page_requires_login() -> None:
     app_module.app.dependency_overrides[app_module.get_optional_user] = no_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get("/history", follow_redirects=False)
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/history", follow_redirects=False)
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -584,3 +586,13 @@ async def test_orphan_cleanup_refuses_while_a_sync_holds_the_lock(session, tmp_p
 
     assert error.value.status_code == 409
     assert previewed.exists()
+
+
+def test_requests_with_a_foreign_host_header_are_rejected() -> None:
+    client = TestClient(app_module.app, base_url=LOCAL_BASE_URL)
+
+    rebinding = client.get("/healthz", headers={"host": "evil.example:8765"})
+    local = client.get("/static/css/app.css", headers={"host": "localhost:8765"})
+
+    assert rebinding.status_code == 400
+    assert local.status_code == 200

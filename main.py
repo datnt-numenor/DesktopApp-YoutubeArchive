@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlencode
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -80,6 +81,7 @@ from windows_scheduler import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+LOCAL_HOSTS = ["127.0.0.1", "localhost"]
 ASSET_VERSION = "20261019-redesign"
 
 @asynccontextmanager
@@ -110,6 +112,9 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+# The server only listens on 127.0.0.1, but a web page can point its own domain at that address
+# (DNS rebinding) and talk to the app as same-origin. Rejecting other Host headers blocks that.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTS)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 

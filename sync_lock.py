@@ -39,8 +39,8 @@ def _unlock(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-@contextmanager
-def sync_process_lock(path: Path = SYNC_LOCK_PATH) -> Iterator[None]:
+def acquire_file_lock(path: Path) -> BinaryIO:
+    """Lock the first byte of path without waiting; raise OSError when another handle holds it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+b")
     if path.stat().st_size == 0:
@@ -48,8 +48,17 @@ def sync_process_lock(path: Path = SYNC_LOCK_PATH) -> Iterator[None]:
         handle.flush()
     try:
         _lock(handle)
-    except OSError as exc:
+    except OSError:
         handle.close()
+        raise
+    return handle
+
+
+@contextmanager
+def sync_process_lock(path: Path = SYNC_LOCK_PATH) -> Iterator[None]:
+    try:
+        handle = acquire_file_lock(path)
+    except OSError as exc:
         raise SyncAlreadyRunning("Another playlist sync is already running") from exc
     try:
         yield
