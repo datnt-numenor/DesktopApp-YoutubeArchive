@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -16,7 +17,7 @@ from database import AsyncSessionLocal
 from downloader import DownloaderError, cache_thumbnail, download_video, extract_playlist_metadata, extract_video_metadata
 from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User
 from storage import storage
-from sync_lock import sync_process_lock
+from sync_lock import SyncAlreadyRunning, sync_process_lock
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ TaskState = Literal["queued", "running", "done", "failed"]
 ACTIVE_TASK_STATES = {"queued", "running"}
 METADATA_IMPORT_FORMAT = "metadata"
 FINISHED_TASK_RETENTION = timedelta(hours=1)
+PROCESS_LOCK_RETRY_SECONDS = 15.0
+PROCESS_LOCK_MAX_WAIT_SECONDS = 6 * 60 * 60.0
 
 
 @dataclass
@@ -550,22 +553,93 @@ def _start_background_task(coroutine: Coroutine[Any, Any, None]) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+@dataclass
+class DownloadJob:
+    task_id: str
+    description: str
+    run: Callable[[], Awaitable[None]]
+
+
+_download_queue: asyncio.Queue[DownloadJob] | None = None
+_download_worker: asyncio.Task[None] | None = None
+
+
+def _fail_orphaned_download_tasks() -> None:
+    """Tasks queued on a previous event loop can never run; release them for new requests."""
+    for task in task_registry.values():
+        if task.format != METADATA_IMPORT_FORMAT and task.status in ACTIVE_TASK_STATES:
+            _update_task(task.task_id, status="failed", error="The local server restarted before this task finished")
+
+
+def _download_queue_for_current_loop() -> asyncio.Queue[DownloadJob]:
+    global _download_queue, _download_worker
+    loop = asyncio.get_running_loop()
+    if _download_worker is None or _download_worker.done() or _download_worker.get_loop() is not loop:
+        if _download_worker is not None:
+            _fail_orphaned_download_tasks()
+        _download_queue = asyncio.Queue()
+        _download_worker = loop.create_task(_run_download_worker(_download_queue), name="ytarchive-download-queue")
+    assert _download_queue is not None
+    return _download_queue
+
+
+async def _run_with_process_lock(job: DownloadJob) -> None:
+    """Run one job while holding the cross-process lock shared with the scheduled sync."""
+    waited_seconds = 0.0
+    while True:
+        lock = ExitStack()
+        try:
+            lock.enter_context(sync_process_lock())
+        except SyncAlreadyRunning:
+            lock.close()
+            if waited_seconds >= PROCESS_LOCK_MAX_WAIT_SECONDS:
+                raise
+            _update_task(job.task_id, current_video="Waiting for the scheduled sync to finish")
+            await asyncio.sleep(PROCESS_LOCK_RETRY_SECONDS)
+            waited_seconds += PROCESS_LOCK_RETRY_SECONDS
+            continue
+        with lock:
+            await job.run()
+        return
+
+
+async def _run_download_worker(queue: asyncio.Queue[DownloadJob]) -> None:
+    while True:
+        job = await queue.get()
+        try:
+            await _run_with_process_lock(job)
+        except Exception as exc:  # noqa: BLE001 - one failed job must not stop the queue
+            logger.exception("%s failed", job.description)
+            _update_task(job.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
+        finally:
+            queue.task_done()
+
+
+def _enqueue_download_job(
+    queue: asyncio.Queue[DownloadJob],
+    progress: TaskProgress,
+    description: str,
+    run: Callable[[], Awaitable[None]],
+) -> TaskProgress:
+    _update_task(progress.task_id, current_video="Waiting in queue")
+    queue.put_nowait(DownloadJob(task_id=progress.task_id, description=description, run=run))
+    return progress
+
+
 def enqueue_local_sync(playlist_id: int, owner_id: str, playlist_title: str, format_: str) -> TaskProgress:
+    # Resolve the queue first so tasks orphaned by a server restart are released before deduplication.
+    queue = _download_queue_for_current_loop()
     existing = find_active_task(playlist_id, owner_id, format_)
     if existing:
         return existing
 
     progress = create_task_status(playlist_id, owner_id, playlist_title, format_)
-
-    async def runner() -> None:
-        try:
-            await sync_playlist_by_id(playlist_id, owner_id, format_, progress.task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Sync task failed")
-            _update_task(progress.task_id, status="failed", error=str(exc))
-
-    _start_background_task(runner())
-    return progress
+    return _enqueue_download_job(
+        queue,
+        progress,
+        "Sync task",
+        lambda: sync_playlist_by_id(playlist_id, owner_id, format_, progress.task_id, acquire_process_lock=False),
+    )
 
 
 def enqueue_custom_youtube_import(
@@ -574,17 +648,14 @@ def enqueue_custom_youtube_import(
     playlist_title: str,
     urls: list[str],
 ) -> TaskProgress:
+    queue = _download_queue_for_current_loop()
     progress = create_task_status(playlist_id, owner_id, playlist_title, "mp3")
-
-    async def runner() -> None:
-        try:
-            await import_custom_youtube_videos_by_id(playlist_id, owner_id, urls, progress.task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Custom YouTube import task failed")
-            _update_task(progress.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
-
-    _start_background_task(runner())
-    return progress
+    return _enqueue_download_job(
+        queue,
+        progress,
+        "Custom YouTube import task",
+        lambda: import_custom_youtube_videos_by_id(playlist_id, owner_id, urls, progress.task_id),
+    )
 
 
 def enqueue_local_metadata_import(playlist_id: int, owner_id: str, playlist_title: str) -> TaskProgress:
@@ -613,6 +684,8 @@ def enqueue_sync(playlist_id: int, owner_id: str, playlist_title: str, format_: 
 
 def enqueue_metadata_import(playlist_id: int, owner_id: str, playlist_title: str) -> TaskProgress:
     return enqueue_local_metadata_import(playlist_id, owner_id, playlist_title)
+
+
 async def _cache_metadata_thumbnails(session: AsyncSession, metadata: dict[str, Any]) -> None:
     semaphore = asyncio.Semaphore(6)
 

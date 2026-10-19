@@ -1,5 +1,8 @@
 import asyncio
+from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
+
+import pytest_asyncio
 
 import tasks
 import crud
@@ -9,6 +12,18 @@ from models import Playlist, PlaylistVideo, User, Video, VideoStatus
 
 def setup_function() -> None:
     tasks.task_registry.clear()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def stop_download_worker():
+    yield
+    worker = tasks._download_worker
+    tasks._download_worker = None
+    tasks._download_queue = None
+    if worker is not None and not worker.done():
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
 
 
 def test_unavailable_error_detection() -> None:
@@ -118,20 +133,116 @@ def test_active_task_listing_hides_finished_tasks() -> None:
     assert tasks.find_active_task(2, "owner-1", "mp3") is None
 
 
-def test_enqueue_sync_reuses_existing_active_task(monkeypatch) -> None:
-    created_coroutines = []
+async def test_enqueue_sync_reuses_existing_active_task(monkeypatch) -> None:
+    release = asyncio.Event()
+    started = []
 
-    def fake_start_background_task(coro):
-        created_coroutines.append(coro)
-        coro.close()
+    async def fake_sync(playlist_id, owner_id, format_, task_id, **_kwargs):
+        started.append(playlist_id)
+        await release.wait()
 
-    monkeypatch.setattr(tasks, "_start_background_task", fake_start_background_task)
+    monkeypatch.setattr(tasks, "sync_playlist_by_id", fake_sync)
+    monkeypatch.setattr(tasks, "sync_process_lock", nullcontext)
 
     first = tasks.enqueue_local_sync(playlist_id=1, owner_id="owner-1", playlist_title="Piano", format_="mp3")
     second = tasks.enqueue_local_sync(playlist_id=1, owner_id="owner-1", playlist_title="Piano", format_="mp3")
+    await asyncio.sleep(0.01)
+    release.set()
+    await tasks._download_queue.join()
 
     assert first is second
-    assert len(created_coroutines) == 1
+    assert started == [1]
+
+
+async def test_download_jobs_run_one_at_a_time_in_order(monkeypatch) -> None:
+    events = []
+
+    async def fake_sync(playlist_id, owner_id, format_, task_id, **kwargs):
+        assert kwargs == {"acquire_process_lock": False}
+        events.append(("start", playlist_id))
+        await asyncio.sleep(0.01)
+        events.append(("end", playlist_id))
+        tasks._update_task(task_id, status="done")
+
+    async def fake_import(playlist_id, owner_id, urls, task_id):
+        events.append(("start", "import"))
+        events.append(("end", "import"))
+        tasks._update_task(task_id, status="done")
+
+    monkeypatch.setattr(tasks, "sync_playlist_by_id", fake_sync)
+    monkeypatch.setattr(tasks, "import_custom_youtube_videos_by_id", fake_import)
+    monkeypatch.setattr(tasks, "sync_process_lock", nullcontext)
+
+    first = tasks.enqueue_local_sync(1, "owner-1", "First", "mp3")
+    second = tasks.enqueue_local_sync(2, "owner-1", "Second", "mp3")
+    imported = tasks.enqueue_custom_youtube_import(3, "owner-1", "Custom", ["https://youtu.be/abc"])
+
+    assert second.status == "queued"
+    assert second.current_video == "Waiting in queue"
+    await tasks._download_queue.join()
+
+    assert events == [
+        ("start", 1),
+        ("end", 1),
+        ("start", 2),
+        ("end", 2),
+        ("start", "import"),
+        ("end", "import"),
+    ]
+    assert {first.status, second.status, imported.status} == {"done"}
+
+
+async def test_failed_download_job_does_not_stop_the_queue(monkeypatch) -> None:
+    async def fake_sync(playlist_id, owner_id, format_, task_id, **_kwargs):
+        if playlist_id == 1:
+            raise RuntimeError("yt-dlp crashed")
+        tasks._update_task(task_id, status="done")
+
+    monkeypatch.setattr(tasks, "sync_playlist_by_id", fake_sync)
+    monkeypatch.setattr(tasks, "sync_process_lock", nullcontext)
+
+    failed = tasks.enqueue_local_sync(1, "owner-1", "Broken", "mp3")
+    succeeded = tasks.enqueue_local_sync(2, "owner-1", "Fine", "mp3")
+    await tasks._download_queue.join()
+
+    assert failed.status == "failed"
+    assert failed.error == "yt-dlp crashed"
+    assert succeeded.status == "done"
+
+
+async def test_download_job_waits_while_scheduled_sync_holds_the_lock(monkeypatch) -> None:
+    attempts = []
+
+    @contextmanager
+    def busy_then_free_lock():
+        attempts.append(len(attempts))
+        if len(attempts) < 3:
+            raise tasks.SyncAlreadyRunning("busy")
+        yield
+
+    async def fake_sync(playlist_id, owner_id, format_, task_id, **_kwargs):
+        tasks._update_task(task_id, status="done")
+
+    monkeypatch.setattr(tasks, "sync_playlist_by_id", fake_sync)
+    monkeypatch.setattr(tasks, "sync_process_lock", busy_then_free_lock)
+    monkeypatch.setattr(tasks, "PROCESS_LOCK_RETRY_SECONDS", 0.001)
+
+    progress = tasks.enqueue_local_sync(1, "owner-1", "Waiting", "mp3")
+    await tasks._download_queue.join()
+
+    assert len(attempts) == 3
+    assert progress.status == "done"
+
+
+def test_tasks_from_a_previous_server_loop_are_released() -> None:
+    stale = tasks.create_task_status(1, "owner-1", "Stale", "mp3")
+    metadata = tasks.create_task_status(2, "owner-1", "Importing", tasks.METADATA_IMPORT_FORMAT)
+
+    tasks._fail_orphaned_download_tasks()
+
+    assert stale.status == "failed"
+    assert metadata.status == "queued"
+    assert tasks.find_active_task(1, "owner-1", "mp3") is None
 
 
 def test_enqueue_metadata_import_reuses_existing_active_task(monkeypatch) -> None:
