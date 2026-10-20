@@ -681,3 +681,11 @@ async def test_upload_is_refused_without_reading_when_storage_is_full(session, m
 
     assert error.value.status_code == 413
     assert error.value.detail == "Storage quota is full"
+
+
+def test_song_search_index_is_reloaded_after_data_changes() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    invalidate_page_cache = script.split("function invalidatePageCache()", 1)[1].split("\n}\n", 1)[0]
+
+    assert "invalidatePlaylistSearchIndex();" in invalidate_page_cache
+    assert "if (generation === playlistSearchIndexGeneration) playlistSearchIndex = index;" in script

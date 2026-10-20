@@ -209,6 +209,8 @@ function trimPageCache() {
 
 function invalidatePageCache() {
     pageCache.clear();
+    // Called after every change to playlists or songs, so the song search must reload too.
+    invalidatePlaylistSearchIndex();
 }
 
 function cachedPage(url) {
@@ -552,13 +554,22 @@ function normalizeSearch(value) {
 
 let playlistSearchIndex = null;
 let playlistSearchIndexRequest = null;
+let playlistSearchIndexGeneration = 0;
+
+function invalidatePlaylistSearchIndex() {
+    playlistSearchIndex = null;
+    playlistSearchIndexRequest = null;
+    playlistSearchIndexGeneration += 1;
+}
 
 function loadPlaylistSearchIndex() {
     if (playlistSearchIndex) return Promise.resolve(playlistSearchIndex);
     if (!playlistSearchIndexRequest) {
+        const generation = playlistSearchIndexGeneration;
         playlistSearchIndexRequest = requestJson("/api/playlists/search-index", { timeoutMs: 15000 })
             .then((index) => {
-                playlistSearchIndex = index;
+                // Drop a response that started before the data changed.
+                if (generation === playlistSearchIndexGeneration) playlistSearchIndex = index;
                 return index;
             })
             .catch((error) => {
@@ -566,7 +577,7 @@ function loadPlaylistSearchIndex() {
                 return {};
             })
             .finally(() => {
-                playlistSearchIndexRequest = null;
+                if (generation === playlistSearchIndexGeneration) playlistSearchIndexRequest = null;
             });
     }
     return playlistSearchIndexRequest;

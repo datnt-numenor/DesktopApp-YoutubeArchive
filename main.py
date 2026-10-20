@@ -89,7 +89,7 @@ from windows_scheduler import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
-ASSET_VERSION = "20261020-i18n"
+ASSET_VERSION = "20261020-search-refresh"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
