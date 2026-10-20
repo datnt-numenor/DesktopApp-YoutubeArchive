@@ -1,40 +1,41 @@
 import asyncio
-import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-try:
-    from redis import Redis
-    from redis.exceptions import RedisError
-except ImportError:  # pragma: no cover - runtime dependency is declared in requirements
-    Redis = None  # type: ignore[assignment]
-    RedisError = Exception  # type: ignore[assignment]
-
-try:
-    import sentry_sdk
-except ImportError:  # pragma: no cover - optional production dependency
-    sentry_sdk = None
-
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 import crud
 from config import BASE_DIR, settings
 from database import AsyncSessionLocal
-from downloader import DownloaderError, cache_thumbnail, download_video, extract_playlist_metadata, extract_video_metadata
-from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User
+from downloader import (
+    DownloadCancelled,
+    DownloaderError,
+    cache_thumbnail,
+    download_video,
+    extract_playlist_metadata,
+    extract_video_metadata,
+)
+from models import Playlist, PlaylistSource, PlaylistVideo, SyncEventType, User, Video
 from storage import storage
-from sync_lock import sync_process_lock
+from sync_lock import SyncAlreadyRunning, sync_process_lock
 
 logger = logging.getLogger(__name__)
 
 TaskState = Literal["queued", "running", "done", "failed"]
 ACTIVE_TASK_STATES = {"queued", "running"}
 METADATA_IMPORT_FORMAT = "metadata"
+FINISHED_TASK_RETENTION = timedelta(hours=1)
+METADATA_WRITE_ATTEMPTS = 3
+PROCESS_LOCK_RETRY_SECONDS = 15.0
+PROCESS_LOCK_MAX_WAIT_SECONDS = 6 * 60 * 60.0
 
 
 @dataclass
@@ -69,11 +70,8 @@ class TaskProgress:
 
 
 task_registry: dict[str, TaskProgress] = {}
-_redis: Any | None = None
-
-TASK_KEY_PREFIX = "ytarchive:task:"
-OWNER_TASKS_KEY_PREFIX = "ytarchive:owner_tasks:"
-ACTIVE_TASK_KEY_PREFIX = "ytarchive:active_task:"
+# The event loop only keeps weak references to tasks; hold them until they finish.
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 UNAVAILABLE_ERROR_MARKERS = (
@@ -105,6 +103,10 @@ async def _probe_missing_playlist_videos(
         video = association.video
         if video.yt_video_id in current_yt_ids:
             continue
+        if association.youtube_unavailable_at is not None or association.removed_from_youtube_playlist_at is not None:
+            # Already classified by an earlier sync; probing it again only slows the sync down
+            # and adds YouTube requests. Missing results are treated as "unknown" (no change).
+            continue
         url = f"https://www.youtube.com/watch?v={video.yt_video_id}"
         try:
             video_metadata = await extract_video_metadata(url)
@@ -124,99 +126,19 @@ async def _probe_missing_playlist_videos(
     return results
 
 
-def _redis_client() -> Any | None:
-    if not settings.use_celery_tasks:
-        return None
-    if Redis is None:
-        raise RuntimeError("Redis package is not installed")
-
-    global _redis
-    if _redis is None:
-        _redis = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_timeout=settings.redis_socket_timeout_seconds,
-            socket_connect_timeout=settings.redis_socket_connect_timeout_seconds,
-            health_check_interval=30,
-            retry_on_timeout=False,
-        )
-    return _redis
-
-
-def _task_key(task_id: str) -> str:
-    return f"{TASK_KEY_PREFIX}{task_id}"
-
-
-def _owner_tasks_key(owner_id: str) -> str:
-    return f"{OWNER_TASKS_KEY_PREFIX}{owner_id}"
-
-
-def _active_task_key(playlist_id: int, owner_id: str, format_: str) -> str:
-    return f"{ACTIVE_TASK_KEY_PREFIX}{owner_id}:{playlist_id}:{format_}"
-
-
-def _coerce_task(raw: dict[str, Any]) -> TaskProgress:
-    fields = TaskProgress.__dataclass_fields__
-    data = {key: raw[key] for key in fields if key in raw}
-    data["errors"] = [
-        error if isinstance(error, TaskVideoError) else TaskVideoError(**error)
-        for error in raw.get("errors", [])
-    ]
-    return TaskProgress(**data)
-
-
-def _load_redis_task(task_id: str) -> TaskProgress | None:
-    client = _redis_client()
-    if client is None:
-        return None
-
-    try:
-        payload = client.get(_task_key(task_id))
-    except RedisError:
-        logger.warning("Unable to load task status from Redis", exc_info=True)
-        return None
-    if not payload:
-        return None
-    if isinstance(payload, bytes):
-        payload = payload.decode("utf-8")
-    return _coerce_task(json.loads(payload))
-
-
-def _save_redis_task(task: TaskProgress) -> None:
-    client = _redis_client()
-    if client is None:
-        return
-
-    ttl = settings.task_status_ttl_seconds
-    client.setex(_task_key(task.task_id), ttl, json.dumps(task.to_dict()))
-    if task.owner_id:
-        owner_key = _owner_tasks_key(task.owner_id)
-        client.sadd(owner_key, task.task_id)
-        client.expire(owner_key, ttl)
-
-    if task.playlist_id is None or not task.owner_id or not task.format:
-        return
-
-    active_key = _active_task_key(task.playlist_id, task.owner_id, task.format)
-    if task.status in ACTIVE_TASK_STATES:
-        client.setex(active_key, ttl, task.task_id)
-        return
-
-    active_task_id = client.get(active_key)
-    if isinstance(active_task_id, bytes):
-        active_task_id = active_task_id.decode("utf-8")
-    if active_task_id == task.task_id:
-        client.delete(active_key)
-
-
 def _save_task(task: TaskProgress) -> None:
-    if settings.use_celery_tasks:
-        _save_redis_task(task)
-    else:
-        task_registry[task.task_id] = task
+    task_registry[task.task_id] = task
+
+
+def _prune_finished_local_tasks() -> None:
+    cutoff = datetime.now(timezone.utc) - FINISHED_TASK_RETENTION
+    for task_id, task in list(task_registry.items()):
+        if task.finished_at and datetime.fromisoformat(task.finished_at) < cutoff:
+            task_registry.pop(task_id, None)
 
 
 def create_task_status(playlist_id: int, owner_id: str, playlist_title: str, format_: str) -> TaskProgress:
+    _prune_finished_local_tasks()
     task_id = str(uuid.uuid4())
     progress = TaskProgress(
         task_id=task_id,
@@ -232,32 +154,11 @@ def create_task_status(playlist_id: int, owner_id: str, playlist_title: str, for
 
 
 def get_task_status(task_id: str) -> TaskProgress | None:
-    if settings.use_celery_tasks:
-        return _load_redis_task(task_id)
     return task_registry.get(task_id)
 
 
 def list_task_statuses(owner_id: str | None = None, playlist_id: int | None = None) -> list[TaskProgress]:
-    if settings.use_celery_tasks:
-        client = _redis_client()
-        if client is None:
-            return []
-        try:
-            task_ids: set[str] = set()
-            if owner_id is not None:
-                raw_task_ids = client.smembers(_owner_tasks_key(owner_id))
-                task_ids = {task_id.decode("utf-8") if isinstance(task_id, bytes) else task_id for task_id in raw_task_ids}
-            else:
-                for key in client.scan_iter(f"{TASK_KEY_PREFIX}*"):
-                    key_text = key.decode("utf-8") if isinstance(key, bytes) else key
-                    task_ids.add(key_text.removeprefix(TASK_KEY_PREFIX))
-            tasks = [task for task_id in task_ids if (task := _load_redis_task(task_id))]
-        except RedisError:
-            logger.warning("Unable to list active task statuses from Redis", exc_info=True)
-            return []
-    else:
-        tasks = list(task_registry.values())
-
+    tasks = list(task_registry.values())
     if owner_id is not None:
         tasks = [task for task in tasks if task.owner_id == owner_id]
     if playlist_id is not None:
@@ -267,30 +168,6 @@ def list_task_statuses(owner_id: str | None = None, playlist_id: int | None = No
 
 
 def find_active_task(playlist_id: int, owner_id: str, format_: str) -> TaskProgress | None:
-    if settings.use_celery_tasks:
-        client = _redis_client()
-        if client is None:
-            return None
-
-        try:
-            active_key = _active_task_key(playlist_id, owner_id, format_)
-            task_id = client.get(active_key)
-            if isinstance(task_id, bytes):
-                task_id = task_id.decode("utf-8")
-            if task_id:
-                task = _load_redis_task(task_id)
-                if task and task.status in ACTIVE_TASK_STATES:
-                    return task
-                client.delete(active_key)
-        except RedisError:
-            logger.warning("Unable to find active task in Redis", exc_info=True)
-            return None
-
-        for task in list_task_statuses(owner_id=owner_id, playlist_id=playlist_id):
-            if task.format == format_ and task.status in ACTIVE_TASK_STATES:
-                return task
-        return None
-
     for task in task_registry.values():
         if (
             task.playlist_id == playlist_id
@@ -341,6 +218,49 @@ def _update_task(
     _save_task(task)
 
 
+async def _write_playlist_metadata(
+    session: AsyncSession,
+    playlist: Playlist,
+    metadata: dict[str, Any],
+    *,
+    missing_video_availability: dict[str, dict[str, Any]] | None = None,
+    refresh_after_rollback: list[Any] | None = None,
+) -> tuple[Playlist, list[Video]]:
+    """Save playlist metadata, retrying when another writer inserted the same video first.
+
+    Metadata imports run outside the download queue, and the scheduled sync is a separate
+    process, so two sessions can both try to INSERT a video that neither saw. The loser gets an
+    IntegrityError; after a rollback the row exists and a retry simply updates it.
+    """
+    playlist_id, owner_id = playlist.id, playlist.owner_id
+    for attempt in range(1, METADATA_WRITE_ATTEMPTS + 1):
+        newly_unavailable: list[Video] = []
+        try:
+            playlist = await crud.sync_playlist_metadata(
+                session,
+                playlist,
+                metadata,
+                newly_unavailable=newly_unavailable,
+                missing_video_availability=missing_video_availability,
+            )
+            return playlist, newly_unavailable
+        except IntegrityError:
+            await session.rollback()
+            if attempt == METADATA_WRITE_ATTEMPTS:
+                raise
+            logger.warning(
+                "Playlist %s metadata conflicted with a concurrent write; retrying (%d/%d)",
+                playlist_id,
+                attempt,
+                METADATA_WRITE_ATTEMPTS,
+            )
+            # The rollback expired every loaded object; reload what the caller keeps using.
+            for instance in refresh_after_rollback or []:
+                await session.refresh(instance)
+            playlist = await crud.get_playlist_for_owner(session, playlist_id, owner_id)
+    raise AssertionError("unreachable")
+
+
 async def sync_playlist(
     session: AsyncSession,
     playlist: Playlist,
@@ -360,13 +280,12 @@ async def sync_playlist(
     try:
         metadata = await extract_playlist_metadata(playlist.url)
         missing_video_availability = await _probe_missing_playlist_videos(playlist, metadata)
-        newly_unavailable = []
-        playlist = await crud.sync_playlist_metadata(
+        playlist, newly_unavailable = await _write_playlist_metadata(
             session,
             playlist,
             metadata,
-            newly_unavailable=newly_unavailable,
             missing_video_availability=missing_video_availability,
+            refresh_after_rollback=[history_run, owner],
         )
         for video in newly_unavailable:
             await crud.record_sync_event(session, history_run, video, SyncEventType.UNAVAILABLE)
@@ -384,23 +303,96 @@ async def sync_playlist(
         await crud.finish_sync_run(session, history_run)
         return
 
-    total = len(targets)
-    completed = 0
-    failed = 0
-    if task_id:
-        _update_task(task_id, status="running", progress=5, total=total, completed=0, failed=0)
+    try:
+        total = len(targets)
+        completed = 0
+        failed = 0
+        if task_id:
+            _update_task(task_id, status="running", progress=5, total=total, completed=0, failed=0)
 
-    for index, association in enumerate(targets, start=1):
-        video_title = association.video.title
-        try:
-            if owner.storage_used_bytes >= owner.storage_quota_bytes:
-                message = "Storage quota reached"
-                logger.warning("%s for user %s", message, owner.email)
-                await crud.mark_video_download_failed(session, association, message)
-                await crud.record_sync_event(
-                    session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
+        for index, association in enumerate(targets, start=1):
+            video_title = association.video.title
+            try:
+                if owner.storage_used_bytes >= owner.storage_quota_bytes:
+                    message = "Storage quota reached"
+                    logger.warning("%s for user %s", message, owner.email)
+                    await crud.mark_video_download_failed(session, association, message)
+                    await crud.record_sync_event(
+                        session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
+                    )
+                    failed += 1
+                    if task_id:
+                        _update_task(
+                            task_id,
+                            failed=failed,
+                            append_error=TaskVideoError(
+                                video_id=association.video.id,
+                                yt_video_id=association.video.yt_video_id,
+                                title=video_title,
+                                message=message,
+                            ),
+                        )
+                    break
+
+                if task_id:
+                    _update_task(task_id, current_video=video_title)
+
+                await crud.mark_video_download_started(session, association)
+                expected_path = settings.downloads_dir / f"{association.video.yt_video_id}.mp3"
+                existed_before = expected_path.exists()
+                local_path = await download_video(
+                    association.video.yt_video_id,
+                    settings.downloads_dir,
                 )
+                file_size = local_path.stat().st_size
+                storage_increment = 0 if existed_before else file_size
+                if owner.storage_used_bytes + storage_increment > owner.storage_quota_bytes:
+                    message = "This file would exceed storage quota"
+                    logger.warning("Skipping %s because it would exceed user storage quota", local_path)
+                    if not existed_before:
+                        local_path.unlink(missing_ok=True)
+                    await crud.mark_video_download_failed(session, association, message)
+                    await crud.record_sync_event(
+                        session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
+                    )
+                    failed += 1
+                    if task_id:
+                        _update_task(
+                            task_id,
+                            failed=failed,
+                            append_error=TaskVideoError(
+                                video_id=association.video.id,
+                                yt_video_id=association.video.yt_video_id,
+                                title=video_title,
+                                message=message,
+                            ),
+                        )
+                    continue
+
+                object_key = await storage.upload_file(
+                    local_path,
+                    build_media_object_key(owner.id, association.playlist_id, local_path.name),
+                )
+                await crud.mark_video_downloaded(session, association, object_key, "mp3", storage_increment, owner)
+                await crud.record_sync_event(session, history_run, association.video, SyncEventType.DOWNLOADED)
+                completed += 1
+            except DownloadCancelled:
+                # Closing the app is not a failure of this video; stop the whole run instead.
+                raise
+            except Exception as exc:  # noqa: BLE001
                 failed += 1
+                message = str(exc) or exc.__class__.__name__
+                logger.exception("Failed to download video %s", association.video.yt_video_id)
+                if is_youtube_unavailable_error(message):
+                    await crud.mark_video_unavailable_on_youtube(session, association, message)
+                    await crud.record_sync_event(
+                        session, history_run, association.video, SyncEventType.UNAVAILABLE, message
+                    )
+                else:
+                    await crud.mark_video_download_failed(session, association, message)
+                    await crud.record_sync_event(
+                        session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
+                    )
                 if task_id:
                     _update_task(
                         task_id,
@@ -412,86 +404,22 @@ async def sync_playlist(
                             message=message,
                         ),
                     )
-                break
 
-            if task_id:
-                _update_task(task_id, current_video=video_title)
-
-            await crud.mark_video_download_started(session, association)
-            expected_path = settings.downloads_dir / f"{association.video.yt_video_id}.mp3"
-            existed_before = expected_path.exists()
-            local_path = await download_video(
-                association.video.yt_video_id,
-                settings.downloads_dir,
-            )
-            file_size = local_path.stat().st_size
-            storage_increment = 0 if existed_before else file_size
-            if owner.storage_used_bytes + storage_increment > owner.storage_quota_bytes:
-                message = "This file would exceed storage quota"
-                logger.warning("Skipping %s because it would exceed user storage quota", local_path)
-                if not existed_before:
-                    local_path.unlink(missing_ok=True)
-                await crud.mark_video_download_failed(session, association, message)
-                await crud.record_sync_event(
-                    session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
-                )
-                failed += 1
-                if task_id:
-                    _update_task(
-                        task_id,
-                        failed=failed,
-                        append_error=TaskVideoError(
-                            video_id=association.video.id,
-                            yt_video_id=association.video.yt_video_id,
-                            title=video_title,
-                            message=message,
-                        ),
-                    )
-                continue
-
-            object_key = await storage.upload_file(
-                local_path,
-                build_media_object_key(owner.id, association.playlist_id, local_path.name),
-            )
-            await crud.mark_video_downloaded(session, association, object_key, "mp3", storage_increment, owner)
-            await crud.record_sync_event(session, history_run, association.video, SyncEventType.DOWNLOADED)
-            completed += 1
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            message = str(exc) or exc.__class__.__name__
-            logger.exception("Failed to download video %s", association.video.yt_video_id)
-            if is_youtube_unavailable_error(message):
-                await crud.mark_video_unavailable_on_youtube(session, association, message)
-                await crud.record_sync_event(
-                    session, history_run, association.video, SyncEventType.UNAVAILABLE, message
-                )
-            else:
-                await crud.mark_video_download_failed(session, association, message)
-                await crud.record_sync_event(
-                    session, history_run, association.video, SyncEventType.DOWNLOAD_FAILED, message
-                )
-            if sentry_sdk:
-                sentry_sdk.capture_exception(exc)
             if task_id:
                 _update_task(
                     task_id,
+                    status="running",
+                    progress=5 + int(index / total * 90),
+                    completed=completed,
                     failed=failed,
-                    append_error=TaskVideoError(
-                        video_id=association.video.id,
-                        yt_video_id=association.video.yt_video_id,
-                        title=video_title,
-                        message=message,
-                    ),
                 )
 
-        if task_id:
-            _update_task(
-                task_id,
-                status="running",
-                progress=5 + int(index / total * 90),
-                completed=completed,
-                failed=failed,
-            )
+    except Exception as exc:
+        # A database error inside the per-video error handling must not leave the run RUNNING.
+        await session.rollback()
+        await session.refresh(history_run)
+        await crud.finish_sync_run(session, history_run, error=str(exc) or exc.__class__.__name__)
+        raise
 
     if task_id:
         _update_task(task_id, status="done", progress=100, completed=completed, failed=failed, current_video="Finished")
@@ -505,7 +433,7 @@ async def import_custom_youtube_videos_by_id(
     task_id: str | None = None,
 ) -> None:
     async with AsyncSessionLocal() as session:
-        playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, owner_id)
+        playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
         owner = await session.get(User, owner_id)
         if not owner:
             raise ValueError(f"Owner {owner_id} does not exist")
@@ -551,6 +479,9 @@ async def import_custom_youtube_videos_by_id(
                 await crud.mark_video_downloaded(session, association, object_key, "mp3", storage_increment, owner)
                 await crud.record_sync_event(session, history_run, association.video, SyncEventType.DOWNLOADED)
                 completed += 1
+            except DownloadCancelled:
+                # Closing the app is not a failure of this video; stop the whole run instead.
+                raise
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 message = str(exc) or exc.__class__.__name__
@@ -611,7 +542,7 @@ async def import_playlist_metadata(session: AsyncSession, playlist: Playlist, ta
         _update_task(task_id, status="running", progress=5, current_video="Reading playlist metadata")
 
     metadata = await extract_playlist_metadata(playlist.url)
-    await crud.sync_playlist_metadata(session, playlist, metadata)
+    await _write_playlist_metadata(session, playlist, metadata)
     await _cache_metadata_thumbnails(session, metadata)
     video_count = len(metadata.get("videos") or [])
     if task_id:
@@ -673,22 +604,99 @@ async def _sync_playlist_by_id_unlocked(
         await sync_playlist(session, playlist, owner, format_, task_id, history_source)
 
 
+def _start_background_task(coroutine: Coroutine[Any, Any, None]) -> None:
+    task = asyncio.create_task(coroutine)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@dataclass
+class DownloadJob:
+    task_id: str
+    description: str
+    run: Callable[[], Awaitable[None]]
+
+
+_download_queue: asyncio.Queue[DownloadJob] | None = None
+_download_worker: asyncio.Task[None] | None = None
+
+
+def _fail_orphaned_download_tasks() -> None:
+    """Tasks queued on a previous event loop can never run; release them for new requests."""
+    for task in task_registry.values():
+        if task.format != METADATA_IMPORT_FORMAT and task.status in ACTIVE_TASK_STATES:
+            _update_task(task.task_id, status="failed", error="The local server restarted before this task finished")
+
+
+def _download_queue_for_current_loop() -> asyncio.Queue[DownloadJob]:
+    global _download_queue, _download_worker
+    loop = asyncio.get_running_loop()
+    if _download_worker is None or _download_worker.done() or _download_worker.get_loop() is not loop:
+        if _download_worker is not None:
+            _fail_orphaned_download_tasks()
+        _download_queue = asyncio.Queue()
+        _download_worker = loop.create_task(_run_download_worker(_download_queue), name="ytarchive-download-queue")
+    assert _download_queue is not None
+    return _download_queue
+
+
+async def _run_with_process_lock(job: DownloadJob) -> None:
+    """Run one job while holding the cross-process lock shared with the scheduled sync."""
+    waited_seconds = 0.0
+    while True:
+        lock = ExitStack()
+        try:
+            lock.enter_context(sync_process_lock())
+        except SyncAlreadyRunning:
+            lock.close()
+            if waited_seconds >= PROCESS_LOCK_MAX_WAIT_SECONDS:
+                raise
+            _update_task(job.task_id, current_video="Waiting for the scheduled sync to finish")
+            await asyncio.sleep(PROCESS_LOCK_RETRY_SECONDS)
+            waited_seconds += PROCESS_LOCK_RETRY_SECONDS
+            continue
+        with lock:
+            await job.run()
+        return
+
+
+async def _run_download_worker(queue: asyncio.Queue[DownloadJob]) -> None:
+    while True:
+        job = await queue.get()
+        try:
+            await _run_with_process_lock(job)
+        except Exception as exc:  # noqa: BLE001 - one failed job must not stop the queue
+            logger.exception("%s failed", job.description)
+            _update_task(job.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
+        finally:
+            queue.task_done()
+
+
+def _enqueue_download_job(
+    queue: asyncio.Queue[DownloadJob],
+    progress: TaskProgress,
+    description: str,
+    run: Callable[[], Awaitable[None]],
+) -> TaskProgress:
+    _update_task(progress.task_id, current_video="Waiting in queue")
+    queue.put_nowait(DownloadJob(task_id=progress.task_id, description=description, run=run))
+    return progress
+
+
 def enqueue_local_sync(playlist_id: int, owner_id: str, playlist_title: str, format_: str) -> TaskProgress:
+    # Resolve the queue first so tasks orphaned by a server restart are released before deduplication.
+    queue = _download_queue_for_current_loop()
     existing = find_active_task(playlist_id, owner_id, format_)
     if existing:
         return existing
 
     progress = create_task_status(playlist_id, owner_id, playlist_title, format_)
-
-    async def runner() -> None:
-        try:
-            await sync_playlist_by_id(playlist_id, owner_id, format_, progress.task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Sync task failed")
-            _update_task(progress.task_id, status="failed", error=str(exc))
-
-    asyncio.create_task(runner())
-    return progress
+    return _enqueue_download_job(
+        queue,
+        progress,
+        "Sync task",
+        lambda: sync_playlist_by_id(playlist_id, owner_id, format_, progress.task_id, acquire_process_lock=False),
+    )
 
 
 def enqueue_custom_youtube_import(
@@ -697,17 +705,14 @@ def enqueue_custom_youtube_import(
     playlist_title: str,
     urls: list[str],
 ) -> TaskProgress:
+    queue = _download_queue_for_current_loop()
     progress = create_task_status(playlist_id, owner_id, playlist_title, "mp3")
-
-    async def runner() -> None:
-        try:
-            await import_custom_youtube_videos_by_id(playlist_id, owner_id, urls, progress.task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Custom YouTube import task failed")
-            _update_task(progress.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
-
-    asyncio.create_task(runner())
-    return progress
+    return _enqueue_download_job(
+        queue,
+        progress,
+        "Custom YouTube import task",
+        lambda: import_custom_youtube_videos_by_id(playlist_id, owner_id, urls, progress.task_id),
+    )
 
 
 def enqueue_local_metadata_import(playlist_id: int, owner_id: str, playlist_title: str) -> TaskProgress:
@@ -724,80 +729,20 @@ def enqueue_local_metadata_import(playlist_id: int, owner_id: str, playlist_titl
             logger.exception("Metadata import task failed")
             _update_task(progress.task_id, status="failed", error=str(exc))
 
-    asyncio.create_task(runner())
-    return progress
-
-
-def _send_celery_sync_task(playlist_id: int, owner_id: str, format_: str, task_id: str) -> None:
-    from worker import sync_playlist_task
-
-    sync_playlist_task.apply_async(
-        args=[playlist_id, owner_id, format_, task_id],
-        task_id=task_id,
-    )
-
-
-def _send_celery_metadata_import_task(playlist_id: int, owner_id: str, task_id: str) -> None:
-    from worker import import_playlist_metadata_task
-
-    import_playlist_metadata_task.apply_async(
-        args=[playlist_id, owner_id, task_id],
-        task_id=task_id,
-    )
-
-
-def enqueue_celery_sync(playlist_id: int, owner_id: str, playlist_title: str, format_: str) -> TaskProgress:
-    progress: TaskProgress | None = None
-    try:
-        existing = find_active_task(playlist_id, owner_id, format_)
-        if existing:
-            return existing
-
-        progress = create_task_status(playlist_id, owner_id, playlist_title, format_)
-        _send_celery_sync_task(playlist_id, owner_id, format_, progress.task_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to enqueue Celery sync task")
-        if progress:
-            try:
-                _update_task(progress.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to mark Celery sync task as failed")
-        raise RuntimeError("Unable to enqueue sync task with Celery/Redis") from exc
-    return progress
-
-
-def enqueue_celery_metadata_import(playlist_id: int, owner_id: str, playlist_title: str) -> TaskProgress:
-    progress: TaskProgress | None = None
-    try:
-        existing = find_active_task(playlist_id, owner_id, METADATA_IMPORT_FORMAT)
-        if existing:
-            return existing
-
-        progress = create_task_status(playlist_id, owner_id, playlist_title, METADATA_IMPORT_FORMAT)
-        _send_celery_metadata_import_task(playlist_id, owner_id, progress.task_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to enqueue Celery metadata import task")
-        if progress:
-            try:
-                _update_task(progress.task_id, status="failed", error=str(exc) or exc.__class__.__name__)
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to mark Celery metadata import task as failed")
-        raise RuntimeError("Unable to enqueue metadata import task with Celery/Redis") from exc
+    _start_background_task(runner())
     return progress
 
 
 def enqueue_sync(playlist_id: int, owner_id: str, playlist_title: str, format_: str) -> TaskProgress:
     if format_ != "mp3":
         raise ValueError("Only MP3 sync is supported")
-    if settings.use_celery_tasks:
-        return enqueue_celery_sync(playlist_id, owner_id, playlist_title, format_)
     return enqueue_local_sync(playlist_id, owner_id, playlist_title, format_)
 
 
 def enqueue_metadata_import(playlist_id: int, owner_id: str, playlist_title: str) -> TaskProgress:
-    if settings.use_celery_tasks:
-        return enqueue_celery_metadata_import(playlist_id, owner_id, playlist_title)
     return enqueue_local_metadata_import(playlist_id, owner_id, playlist_title)
+
+
 async def _cache_metadata_thumbnails(session: AsyncSession, metadata: dict[str, Any]) -> None:
     semaphore = asyncio.Semaphore(6)
 

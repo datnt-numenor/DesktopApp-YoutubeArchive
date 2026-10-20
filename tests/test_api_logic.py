@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+import json
+from contextlib import contextmanager, nullcontext
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +12,9 @@ from main import (
     active_tasks,
     add_playlist,
     calculate_storage_level,
-    collect_system_status,
+    healthz,
     hide_playlist_video,
+    install_sync_schedule,
     restore_playlist_video,
     update_desktop_password,
     update_playlist_auto_sync,
@@ -30,7 +33,10 @@ from schemas import (
     VideoSchema,
 )
 import auth
+import windows_scheduler
 import tasks
+
+LOCAL_BASE_URL = "http://127.0.0.1:8765"
 
 
 def test_storage_warning_thresholds_and_mp3_only_request() -> None:
@@ -44,10 +50,8 @@ def test_storage_warning_thresholds_and_mp3_only_request() -> None:
 
 
 @pytest.fixture(autouse=True)
-def local_task_backend(monkeypatch) -> None:
-    monkeypatch.setattr(tasks.settings, "task_backend", "local")
+def clear_task_registry() -> None:
     tasks.task_registry.clear()
-    tasks._redis = None
 
 
 async def test_active_tasks_endpoint_logic_returns_only_current_user_tasks() -> None:
@@ -121,7 +125,7 @@ async def test_soft_hide_and_restore_endpoints_keep_association(session) -> None
 def test_playlist_detail_template_exposes_hide_and_restore_controls() -> None:
     template = (Path(__file__).resolve().parents[1] / "templates" / "detail.html").read_text(encoding="utf-8")
 
-    assert "Bài đã ẩn" in template
+    assert "Hidden songs ({count})" in template
     assert "js-hide-video" in template
     assert "js-restore-video" in template
     assert "Sync MP4" not in template
@@ -175,8 +179,8 @@ def test_playlist_detail_switches_between_visible_and_hidden_views(monkeypatch) 
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        visible_response = TestClient(app_module.app).get("/playlist/1")
-        hidden_response = TestClient(app_module.app).get("/playlist/1?hidden=1")
+        visible_response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/playlist/1")
+        hidden_response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/playlist/1?hidden=1")
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -187,33 +191,14 @@ def test_playlist_detail_switches_between_visible_and_hidden_views(monkeypatch) 
     assert "Đã ẩn" in hidden_response.text
 
 
-async def test_collect_system_status_reports_counts(session, monkeypatch) -> None:
-    monkeypatch.setattr("main.settings.task_backend", "local")
-    monkeypatch.setattr("main.settings.storage_backend", "local")
-    monkeypatch.setattr("main.settings.registration_invite_code", "invite")
-    monkeypatch.setattr("main.settings.auth_cookie_secure", True)
+async def test_healthz_reports_database_status(session) -> None:
+    response = await healthz(session)
 
-    owner = User(id="owner-1", email="owner@example.com")
-    playlist = Playlist(id=1, owner_id=owner.id, yt_playlist_id="PL123", title="Piano", url="https://example.test")
-    video = Video(id=1, yt_video_id="abc123", title="Song", channel_name="Channel", status=VideoStatus.DOWNLOADED)
-    association = PlaylistVideo(playlist_id=playlist.id, video_id=video.id, local_file_path="downloads/song.mp3")
-    session.add_all([owner, playlist, video, association])
-    await session.commit()
-
-    status = await collect_system_status(session, include_counts=True)
-
-    assert status["checks"]["database"]["ok"]
-    assert status["checks"]["tasks"]["label"] == "local"
-    assert status["checks"]["public_auth"]["ok"]
-    assert status["counts"] == {
-        "users": 1,
-        "playlists": 1,
-        "videos": 1,
-        "saved_media": 1,
-    }
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"status": "ok", "database": True}
 
 
-async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch) -> None:
+async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch, english_ui) -> None:
     owner = User(id="owner-1", email="owner@example.com", playlist_quota=10)
     session.add(owner)
     await session.commit()
@@ -225,7 +210,6 @@ async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch)
         return SimpleNamespace(task_id="task-1")
 
     monkeypatch.setattr("main.enqueue_metadata_import", fake_enqueue)
-    monkeypatch.setattr("main.settings.task_backend", "local")
 
     response = await add_playlist.__wrapped__(
         request=None,
@@ -241,7 +225,7 @@ async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch)
     assert enqueued == [(response.playlist_id, owner.id, "Importing playlist PL_FAST_ADD")]
 
 
-async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session) -> None:
+async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session, english_ui) -> None:
     owner = User(id="owner-1", email="owner@example.com")
     playlist = Playlist(id=1, owner_id=owner.id, yt_playlist_id="PL123", title="Piano", url="https://example.test")
     session.add_all([owner, playlist])
@@ -262,7 +246,7 @@ async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session
     assert response.message == "Auto-sync disabled for Piano"
 
 
-async def test_update_sync_schedule_updates_windows_task(monkeypatch) -> None:
+async def test_update_sync_schedule_updates_windows_task(monkeypatch, english_ui) -> None:
     monkeypatch.setattr(
         "main.set_scheduled_sync_time",
         lambda value: SimpleNamespace(time=value, state="Ready", next_run_time="2026-08-07 12:00"),
@@ -279,11 +263,61 @@ async def test_update_sync_schedule_updates_windows_task(monkeypatch) -> None:
     assert response.message == "Daily MP3 sync updated to 12:00; next run 2026-08-07 12:00"
 
 
+async def test_install_sync_schedule_registers_windows_task(monkeypatch, english_ui) -> None:
+    installed = []
+
+    def fake_install(value: str):
+        installed.append(value)
+        return SimpleNamespace(time=value, state="Ready", next_run_time="2026-10-20 07:15")
+
+    monkeypatch.setattr("main.install_scheduled_sync", fake_install)
+
+    response = await install_sync_schedule.__wrapped__(
+        request=None,
+        payload=SyncScheduleRequest(time="07:15"),
+        _current_user=SimpleNamespace(id="owner-1"),
+        _csrf=None,
+    )
+
+    assert installed == ["07:15"]
+    assert response.message == "Daily MP3 sync installed at 07:15; next run 2026-10-20 07:15"
+
+
+async def test_install_sync_schedule_reports_scheduler_errors(monkeypatch) -> None:
+    def failing_install(_value: str):
+        raise app_module.WindowsSchedulerError("Access is denied")
+
+    monkeypatch.setattr("main.install_scheduled_sync", failing_install)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await install_sync_schedule.__wrapped__(
+            request=None,
+            payload=SyncScheduleRequest(time="07:15"),
+            _current_user=SimpleNamespace(id="owner-1"),
+            _csrf=None,
+        )
+
+    assert error.value.status_code == 503
+    assert error.value.detail == "Access is denied"
+
+
+def test_settings_offers_install_button_when_task_is_missing() -> None:
+    template = (Path(__file__).resolve().parents[1] / "templates" / "_sync_schedule_cards.html").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="syncScheduleForm"' in template and "data-installed=" in template
+    assert "Install daily sync" in template
+    assert '"/settings/sync-schedule/install"' in script
+
+
 async def test_update_desktop_password_endpoint_changes_real_password(session) -> None:
     owner = await auth.set_initial_desktop_password(session, "password123")
+    old_cookie = auth.create_access_token(owner)
+    http_response = app_module.Response()
 
     response = await update_desktop_password.__wrapped__(
         request=None,
+        response=http_response,
         payload=PasswordChangeRequest(current_password="password123", new_password="new-password123"),
         session=session,
         current_user=owner,
@@ -292,6 +326,10 @@ async def test_update_desktop_password_endpoint_changes_real_password(session) -
 
     assert response.status == "ok"
     assert await auth.authenticate_desktop_user(session, "new-password123") is not None
+    # Other sessions are signed out, but this window receives a fresh cookie.
+    assert auth.decode_access_token(old_cookie)["ver"] != owner.token_version
+    new_cookie = http_response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    assert auth.decode_access_token(new_cookie)["ver"] == owner.token_version
 
 
 def test_dashboard_renders_horizontal_layout(monkeypatch) -> None:
@@ -342,7 +380,7 @@ def test_dashboard_renders_horizontal_layout(monkeypatch) -> None:
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get("/")
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/")
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -393,13 +431,18 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
             "failed_count": 1,
             "unavailable_count": 0,
             "page": expected_page,
-            "page_size": 20,
+            "page_size": 10,
             "total_pages": total_pages,
             "playlist_options": [{"value": "7", "label": "Night music", "is_deleted": False}],
             "groups": [
                 {
                     "date_key": "2026-08-13",
                     "date_label": "13/08/2026",
+                    "weekday_index": 3,
+                    "run_count": 1,
+                    "downloaded_count": 2,
+                    "failed_count": 1,
+                    "unavailable_count": 0,
                     "runs": [
                         {
                             "id": 1,
@@ -423,26 +466,41 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
     async def fake_downloaded_count(_session, _owner_id: str):
         return 0
 
+    class FixedDate(date):
+        # The route clamps filters to the last 30 days, so pin "today" to keep the dates below valid.
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 13)
+
+    monkeypatch.setattr(app_module, "date", FixedDate)
     monkeypatch.setattr(app_module.crud, "get_scheduled_sync_history", fake_history)
     monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_downloaded_count)
     app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get(
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get(
             f"/history?date_from=2026-08-01&date_to=2026-08-13&playlist_id=7&status=PARTIAL&page={expected_page}"
         )
     finally:
         app_module.app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert "Lịch sử tự đồng bộ" in response.text
+    assert "Kết quả các lần tự đồng bộ trong 30 ngày gần nhất" in response.text
     assert 'data-nav="history"' in response.text
     assert "Night music" in response.text
     assert "Không có bài mới trong lần tự đồng bộ này" in response.text
+    # One card per day: the counts show up front and the syncs sit in a collapsed body.
+    assert response.text.count('class="dash-card history-day"') == 1
+    assert "Thứ Năm, 13/08/2026" in response.text
+    day = response.text.split('id="historyDay1"', 1)[1].split("history-day-body", 1)[0]
+    assert "2 tải thành công" in day and "1 lỗi" in day and "0 đã xoá" in day
+    assert "bài mới" not in day
+    assert 'aria-expanded="false" aria-controls="historyDayBody1"' in response.text
+    assert 'id="historyDayBody1" aria-hidden="true" inert' in response.text
     assert captured["owner_id"] == owner.id
     assert captured["playlist_filter"] == "7"
     assert captured["status_filter"].value == "PARTIAL"
-    assert captured["page_size"] == 20
+    assert captured["page_size"] == 10
     assert captured["page"] == expected_page
     assert response.text.count('class="history-pagination history-pagination-') == expected_pagination_count
     assert response.text.count('class="history-page-jump js-history-page-jump"') == expected_pagination_count
@@ -463,7 +521,7 @@ def test_scheduled_history_page_requires_login() -> None:
     app_module.app.dependency_overrides[app_module.get_optional_user] = no_user
     app_module.app.dependency_overrides[app_module.get_session] = fake_session
     try:
-        response = TestClient(app_module.app).get("/history", follow_redirects=False)
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/history", follow_redirects=False)
     finally:
         app_module.app.dependency_overrides.clear()
 
@@ -478,3 +536,272 @@ def test_history_page_jump_clamps_page_and_uses_soft_navigation() -> None:
     assert "Math.min(totalPages, Math.max(1, requestedPage))" in script
     assert "new URLSearchParams(new FormData(form))" in script
     assert "await navigateTo(targetUrl.href, { useCache: false })" in script
+
+
+def test_toast_renders_messages_as_text_not_html() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    toast_function = script.split("function showToast", 1)[1].split("\nfunction ", 1)[0]
+
+    assert '<div class="toast-body"></div>' in toast_function
+    assert '.querySelector(".toast-body").textContent = String(message ?? "")' in toast_function
+    assert "${message}" not in toast_function
+
+
+async def _orphan_fixture(session, tmp_path, monkeypatch):
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    kept = downloads / "kept.mp3"
+    previewed = downloads / "previewed.mp3"
+    appeared_later = downloads / "appeared-later.mp3"
+    for path in (kept, previewed, appeared_later):
+        path.write_bytes(b"12345")
+    owner = User(id="orphan-owner", email="orphan-owner@example.com", storage_quota_bytes=10_000)
+    playlist = Playlist(owner=owner, yt_playlist_id="kept", title="Kept", url="https://example.com")
+    video = Video(yt_video_id="kept", title="Kept")
+    session.add_all([owner, playlist, PlaylistVideo(playlist=playlist, video=video, local_file_path=r"downloads\kept.mp3")])
+    await session.commit()
+    monkeypatch.setattr(app_module.settings, "downloads_dir", downloads)
+    return owner, kept, previewed, appeared_later
+
+
+async def test_orphan_cleanup_lists_then_deletes_only_previewed_unused_files(session, tmp_path, monkeypatch, english_ui) -> None:
+    owner, kept, previewed, appeared_later = await _orphan_fixture(session, tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "sync_process_lock", nullcontext)
+
+    listing = await app_module.list_orphaned_media.__wrapped__(request=None, session=session, _current_user=owner)
+    response = await app_module.delete_orphaned_media.__wrapped__(
+        request=None,
+        payload=app_module.OrphanedMediaDeleteRequest(files=["previewed.mp3", "kept.mp3"]),
+        session=session,
+        current_user=owner,
+        _csrf=None,
+    )
+
+    assert {item.name for item in listing.files} == {"previewed.mp3", "appeared-later.mp3"}
+    assert listing.total_bytes == 10
+    assert not previewed.exists()
+    assert kept.exists()
+    assert appeared_later.exists()
+    assert response.message.startswith("Deleted 1 unused MP3 file(s)")
+    assert "1 file(s) were skipped" in response.message
+
+
+async def test_orphan_cleanup_refuses_while_a_sync_holds_the_lock(session, tmp_path, monkeypatch) -> None:
+    owner, _kept, previewed, _appeared_later = await _orphan_fixture(session, tmp_path, monkeypatch)
+
+    @contextmanager
+    def busy_lock():
+        raise app_module.SyncAlreadyRunning("busy")
+        yield
+
+    monkeypatch.setattr(app_module, "sync_process_lock", busy_lock)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await app_module.delete_orphaned_media.__wrapped__(
+            request=None,
+            payload=app_module.OrphanedMediaDeleteRequest(files=["previewed.mp3"]),
+            session=session,
+            current_user=owner,
+            _csrf=None,
+        )
+
+    assert error.value.status_code == 409
+    assert previewed.exists()
+
+
+def test_requests_with_a_foreign_host_header_are_rejected() -> None:
+    client = TestClient(app_module.app, base_url=LOCAL_BASE_URL)
+
+    rebinding = client.get("/healthz", headers={"host": "evil.example:8765"})
+    local = client.get("/static/css/app.css", headers={"host": "localhost:8765"})
+
+    assert rebinding.status_code == 400
+    assert local.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("next_path", "expected"),
+    [
+        ("/playlist/3?hidden=1", "/playlist/3?hidden=1"),
+        ("/settings", "/settings"),
+        (None, "/"),
+        ("", "/"),
+        ("https://evil.example/login", "/"),
+        ("//evil.example", "/"),
+        (r"/\evil.example", "/"),
+        (r"/\/evil.example", "/"),
+        ("/\t/evil.example", "/"),
+        ("/\n/evil.example", "/"),
+        ("settings", "/"),
+    ],
+)
+def test_login_next_path_only_allows_same_site_paths(next_path, expected) -> None:
+    assert app_module.safe_next_path(next_path) == expected
+
+
+async def _upload_owner(session, used_bytes: int, quota_bytes: int) -> tuple[User, Playlist]:
+    owner = User(id="upload-owner", email="upload@example.com", storage_used_bytes=used_bytes, storage_quota_bytes=quota_bytes)
+    playlist = Playlist(
+        owner=owner,
+        yt_playlist_id="custom-upload",
+        title="Uploads",
+        url="custom://upload",
+        source_type=app_module.PlaylistSource.CUSTOM,
+    )
+    session.add_all([owner, playlist])
+    await session.commit()
+    return owner, playlist
+
+
+async def test_upload_is_limited_to_the_remaining_storage(session, monkeypatch) -> None:
+    owner, playlist = await _upload_owner(session, used_bytes=0, quota_bytes=1000)
+    captured = {}
+
+    async def fake_recalculate(_session, user, _data_dir):
+        user.storage_used_bytes = 900
+        return 900
+
+    async def fake_receive(_request, _downloads_dir, max_file_bytes):
+        captured["max_file_bytes"] = max_file_bytes
+        raise app_module.HTTPException(status_code=413, detail="MP3 exceeds storage quota")
+
+    monkeypatch.setattr(app_module.crud, "recalculate_user_storage", fake_recalculate)
+    monkeypatch.setattr(app_module, "receive_mp3_upload", fake_receive)
+
+    with pytest.raises(app_module.HTTPException):
+        await app_module.upload_custom_mp3.__wrapped__(
+            request=None, playlist_id=playlist.id, session=session, current_user=owner, _csrf=None
+        )
+
+    assert captured["max_file_bytes"] == 100
+
+
+async def test_upload_is_refused_without_reading_when_storage_is_full(session, monkeypatch) -> None:
+    owner, playlist = await _upload_owner(session, used_bytes=1000, quota_bytes=1000)
+
+    async def keep_usage(_session, user, _data_dir):
+        return user.storage_used_bytes
+
+    async def must_not_receive(*_args):
+        raise AssertionError("a full quota must reject the upload before reading it")
+
+    monkeypatch.setattr(app_module.crud, "recalculate_user_storage", keep_usage)
+    monkeypatch.setattr(app_module, "receive_mp3_upload", must_not_receive)
+
+    with pytest.raises(app_module.HTTPException) as error:
+        await app_module.upload_custom_mp3.__wrapped__(
+            request=None, playlist_id=playlist.id, session=session, current_user=owner, _csrf=None
+        )
+
+    assert error.value.status_code == 413
+    assert error.value.detail == "Storage quota is full"
+
+
+def test_song_search_index_is_reloaded_after_data_changes() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    invalidate_page_cache = script.split("function invalidatePageCache()", 1)[1].split("\n}\n", 1)[0]
+
+    assert "invalidatePlaylistSearchIndex();" in invalidate_page_cache
+    assert "if (generation === playlistSearchIndexGeneration) playlistSearchIndex = index;" in script
+
+
+@pytest.fixture
+def settings_client(monkeypatch):
+    owner = User(
+        id="owner-schedule",
+        email="schedule@example.com",
+        storage_quota_bytes=20 * 1024 * 1024 * 1024,
+        storage_used_bytes=0,
+    )
+
+    async def fake_user():
+        return owner
+
+    async def fake_session():
+        yield None
+
+    async def fake_downloaded_count(_session, _owner_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_downloaded_count)
+    monkeypatch.setattr(app_module, "get_ytdlp_status", lambda: {"installed_version": None})
+    app_module.invalidate_scheduled_sync_cache()
+    app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
+    app_module.app.dependency_overrides[app_module.get_session] = fake_session
+    try:
+        yield TestClient(app_module.app, base_url=LOCAL_BASE_URL)
+    finally:
+        app_module.app.dependency_overrides.clear()
+        app_module.invalidate_scheduled_sync_cache()
+
+
+def test_settings_page_renders_without_asking_task_scheduler(settings_client, monkeypatch) -> None:
+    def must_not_run():
+        raise AssertionError("opening Settings must not wait for PowerShell")
+
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", must_not_run)
+
+    response = settings_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'id="syncScheduleCard"' in response.text and 'data-loading="true"' in response.text
+    assert 'id="syncStatusCard"' in response.text
+    assert "schedule-info" not in response.text
+    assert 'id="changePasswordForm"' in response.text
+
+
+def test_sync_schedule_api_returns_the_cards_for_an_installed_task(settings_client, monkeypatch) -> None:
+    info = windows_scheduler.ScheduledSyncInfo(
+        time="07:15",
+        state="Ready",
+        next_run_time="2026-10-21 07:15",
+        last_run_time="2026-10-20 07:15:03",
+        last_task_result=0,
+        last_task_result_hex="0x00000000",
+        wake_to_run=True,
+        sync_status="success",
+        sync_succeeded_count=3,
+    )
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", lambda: info)
+
+    response = settings_client.get("/api/sync-schedule")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert 'data-installed="true"' in response.text
+    assert 'value="07:15"' in response.text
+    assert "schedule-info" in response.text
+    assert 'data-loading="true"' not in response.text
+    assert "<html" not in response.text
+
+
+def test_sync_schedule_api_reports_a_task_that_is_not_installed(settings_client, monkeypatch) -> None:
+    def not_installed():
+        raise windows_scheduler.WindowsSchedulerError("Scheduled task is not installed")
+
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", not_installed)
+
+    response = settings_client.get("/api/sync-schedule")
+
+    assert response.status_code == 200
+    assert 'data-installed="false"' in response.text
+    assert "Scheduled task is not installed" in response.text
+    assert "Install daily sync" in response.text or "Cài đặt đồng bộ hằng ngày" in response.text
+
+
+def test_sync_schedule_api_requires_login() -> None:
+    response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/api/sync-schedule")
+
+    assert response.status_code == 401
+
+
+def test_settings_script_loads_schedule_cards_after_the_page_renders() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    init = script.split("function initPlaylistTools()", 1)[1].split("\n", 2)[1]
+    submit = script.split('event.target.id === "syncScheduleForm"', 1)[1].split('event.target.id === "changePasswordForm"', 1)[0]
+
+    assert "loadSyncSchedulePanel();" in init
+    assert '"/api/sync-schedule"' in script
+    assert "await fetchSyncSchedulePanel();" in submit
+    assert "refreshCurrentPage" not in submit
+    assert "js-retry-sync-schedule" in script

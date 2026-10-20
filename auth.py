@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -9,18 +10,16 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import Depends, HTTPException, Request, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_session
-from models import AuthToken, User
+from models import User
 
 LOCAL_DEV_PASSWORD_MARKER = "local-dev-user"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
-PASSWORD_ITERATIONS = 260_000
-TOKEN_PURPOSE_PASSWORD_RESET = "password_reset"
-TOKEN_PURPOSE_EMAIL_VERIFY = "email_verify"
+PASSWORD_ITERATIONS = 600_000  # OWASP 2023 minimum for PBKDF2-HMAC-SHA256
 
 
 def normalize_email(email: str) -> str:
@@ -88,8 +87,23 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(password_hash, expected)
 
 
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def password_needs_rehash(stored_hash: str) -> bool:
+    """True for hashes created with fewer iterations than the current setting."""
+    try:
+        algorithm, iterations_value, _salt, _hash = stored_hash.split("$", 3)
+        return algorithm != PASSWORD_ALGORITHM or int(iterations_value) < PASSWORD_ITERATIONS
+    except ValueError:
+        return False
+
+
+# PBKDF2 at 600k iterations takes a noticeable fraction of a second; run it off the event loop
+# so playback and other requests keep flowing during login and password changes.
+async def hash_password_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, stored_hash: str) -> bool:
+    return await asyncio.to_thread(verify_password, password, stored_hash)
 
 
 def create_csrf_token() -> str:
@@ -119,7 +133,7 @@ def set_csrf_cookie(response: Response, token: str) -> None:
         value=token,
         max_age=settings.auth_cookie_max_age_seconds,
         httponly=False,
-        secure=settings.auth_cookie_secure_enabled,
+        secure=settings.auth_cookie_secure,
         samesite="lax",
     )
 
@@ -153,6 +167,7 @@ def create_access_token(user: User) -> str:
     payload = {
         "sub": user.id,
         "email": user.email,
+        "ver": user.token_version or 0,
         "iat": now,
         "exp": now + settings.auth_cookie_max_age_seconds,
     }
@@ -188,7 +203,7 @@ def set_login_cookie(response: Response, user: User) -> None:
         value=create_access_token(user),
         max_age=settings.auth_cookie_max_age_seconds,
         httponly=True,
-        secure=settings.auth_cookie_secure_enabled,
+        secure=settings.auth_cookie_secure,
         samesite="lax",
     )
 
@@ -197,155 +212,13 @@ def clear_login_cookie(response: Response) -> None:
     response.delete_cookie(
         key=settings.auth_cookie_name,
         httponly=True,
-        secure=settings.auth_cookie_secure_enabled,
+        secure=settings.auth_cookie_secure,
         samesite="lax",
     )
 
 
-async def count_password_users(session: AsyncSession) -> int:
-    result = await session.execute(
-        select(func.count(User.id)).where(User.hashed_password.notin_([LOCAL_DEV_PASSWORD_MARKER, ""]))
-    )
-    return int(result.scalar_one())
-
-
-def is_admin_email(email: str, password_user_count: int) -> bool:
-    admin_emails = settings.admin_email_set
-    if admin_emails:
-        return normalize_email(email) in admin_emails
-    return password_user_count == 0
-
-
-def validate_registration_invite(invite_code: str | None) -> None:
-    expected = settings.registration_invite_code
-    if expected and not hmac.compare_digest(invite_code or "", expected):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid registration invite code")
-
-
-async def register_user(
-    session: AsyncSession,
-    email: str,
-    password: str,
-    invite_code: str | None = None,
-) -> User:
-    validate_registration_invite(invite_code)
-    normalized_email = normalize_email(email)
-    existing_result = await session.execute(select(User).where(User.email == normalized_email))
-    existing_user = existing_result.scalar_one_or_none()
-    password_user_count = await count_password_users(session)
-
-    if existing_user:
-        if existing_user.hashed_password != LOCAL_DEV_PASSWORD_MARKER:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is already registered")
-
-        existing_user.hashed_password = hash_password(password)
-        existing_user.is_active = True
-        existing_user.is_verified = not settings.email_verification_required
-        existing_user.is_superuser = existing_user.is_superuser or is_admin_email(normalized_email, password_user_count)
-        await session.commit()
-        await session.refresh(existing_user)
-        return existing_user
-
-    is_admin = is_admin_email(normalized_email, password_user_count)
-    user = User(
-        email=normalized_email,
-        hashed_password=hash_password(password),
-        is_active=True,
-        is_verified=not settings.email_verification_required,
-        is_superuser=is_admin,
-        playlist_quota=settings.default_playlist_quota,
-        storage_quota_bytes=settings.admin_storage_quota_bytes if is_admin else settings.storage_quota_bytes,
-    )
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
 def is_user_locked(user: User) -> bool:
     return bool(user.locked_until and ensure_aware(user.locked_until) > utc_now())
-
-
-async def create_auth_token(session: AsyncSession, user: User, purpose: str, expires_at: datetime) -> str:
-    raw_token = secrets.token_urlsafe(32)
-    token = AuthToken(
-        user_id=user.id,
-        token_hash=hash_token(raw_token),
-        purpose=purpose,
-        expires_at=expires_at,
-    )
-    session.add(token)
-    await session.commit()
-    return raw_token
-
-
-async def create_email_verification_token(session: AsyncSession, user: User) -> str:
-    return await create_auth_token(
-        session,
-        user,
-        TOKEN_PURPOSE_EMAIL_VERIFY,
-        utc_now() + timedelta(hours=settings.email_verification_token_hours),
-    )
-
-
-async def create_password_reset_token(session: AsyncSession, user: User) -> str:
-    return await create_auth_token(
-        session,
-        user,
-        TOKEN_PURPOSE_PASSWORD_RESET,
-        utc_now() + timedelta(minutes=settings.password_reset_token_minutes),
-    )
-
-
-async def consume_auth_token(session: AsyncSession, raw_token: str, purpose: str) -> User | None:
-    result = await session.execute(
-        select(AuthToken, User)
-        .join(User, AuthToken.user_id == User.id)
-        .where(
-            AuthToken.token_hash == hash_token(raw_token),
-            AuthToken.purpose == purpose,
-            AuthToken.used_at.is_(None),
-        )
-    )
-    row = result.first()
-    if not row:
-        return None
-
-    token, user = row
-    if ensure_aware(token.expires_at) < utc_now():
-        return None
-
-    token.used_at = utc_now()
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def verify_email_token(session: AsyncSession, raw_token: str) -> User | None:
-    user = await consume_auth_token(session, raw_token, TOKEN_PURPOSE_EMAIL_VERIFY)
-    if not user:
-        return None
-    user.is_verified = True
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def reset_password_with_token(session: AsyncSession, raw_token: str, new_password: str) -> User | None:
-    user = await consume_auth_token(session, raw_token, TOKEN_PURPOSE_PASSWORD_RESET)
-    if not user:
-        return None
-    user.hashed_password = hash_password(new_password)
-    user.failed_login_count = 0
-    user.locked_until = None
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def find_user_by_email(session: AsyncSession, email: str) -> User | None:
-    result = await session.execute(select(User).where(User.email == normalize_email(email)))
-    return result.scalar_one_or_none()
 
 
 async def get_desktop_user(session: AsyncSession) -> User | None:
@@ -360,7 +233,10 @@ async def get_desktop_user(session: AsyncSession) -> User | None:
     if configured_user:
         return configured_user
 
-    preferred = await find_user_by_email(session, settings.default_user_email)
+    preferred_result = await session.execute(
+        select(User).where(User.email == normalize_email(settings.default_user_email))
+    )
+    preferred = preferred_result.scalar_one_or_none()
     if preferred:
         return preferred
     result = await session.execute(select(User).order_by(User.created_at, User.id).limit(1))
@@ -384,16 +260,16 @@ async def set_initial_desktop_password(session: AsyncSession, password: str) -> 
     if user is None:
         user = User(
             email=normalize_email(settings.default_user_email),
-            hashed_password=hash_password(password),
+            hashed_password=await hash_password_async(password),
             is_active=True,
             is_verified=True,
             is_superuser=True,
             playlist_quota=settings.default_playlist_quota,
-            storage_quota_bytes=settings.admin_storage_quota_bytes,
+            storage_quota_bytes=settings.storage_quota_bytes,
         )
         session.add(user)
     else:
-        user.hashed_password = hash_password(password)
+        user.hashed_password = await hash_password_async(password)
         user.is_active = True
         user.is_verified = True
         user.is_superuser = True
@@ -418,19 +294,20 @@ async def change_desktop_password(
     new_password: str,
 ) -> None:
     """Change the local owner's password after verifying the existing one."""
-    if not verify_password(current_password, user.hashed_password):
+    if not await verify_password_async(current_password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
     if len(new_password) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 8 characters")
-    if verify_password(new_password, user.hashed_password):
+    if await verify_password_async(new_password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="New password must be different from the current password",
         )
 
-    user.hashed_password = hash_password(new_password)
+    user.hashed_password = await hash_password_async(new_password)
     user.failed_login_count = 0
     user.locked_until = None
+    user.token_version = (user.token_version or 0) + 1
     await session.commit()
     await session.refresh(user)
 
@@ -442,9 +319,7 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
         return None
     if is_user_locked(user):
         return None
-    if settings.email_verification_required and not user.is_verified:
-        return None
-    if not verify_password(password, user.hashed_password):
+    if not await verify_password_async(password, user.hashed_password):
         user.failed_login_count += 1
         if user.failed_login_count >= settings.login_max_attempts:
             user.locked_until = utc_now() + timedelta(minutes=settings.login_lockout_minutes)
@@ -454,9 +329,18 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
 
     user.failed_login_count = 0
     user.locked_until = None
+    if password_needs_rehash(user.hashed_password):
+        # Upgrade hashes made with the old iteration count the first time the password is known.
+        user.hashed_password = await hash_password_async(password)
     await session.commit()
     await session.refresh(user)
     return user
+
+
+async def revoke_sessions(session: AsyncSession, user: User) -> None:
+    """Invalidate every issued session cookie for this user."""
+    user.token_version = (user.token_version or 0) + 1
+    await session.commit()
 
 
 async def get_optional_user(
@@ -475,6 +359,9 @@ async def get_optional_user(
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         return None
+    if payload.get("ver", 0) != (user.token_version or 0):
+        # Issued before a logout or password change.
+        return None
     return user
 
 
@@ -483,8 +370,3 @@ async def get_current_user(user: User | None = Depends(get_optional_user)) -> Us
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     return user
 
-
-async def require_superuser(user: User = Depends(get_current_user)) -> User:
-    if not user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Superuser access required")
-    return user

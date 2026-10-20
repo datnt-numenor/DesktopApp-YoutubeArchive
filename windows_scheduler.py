@@ -33,6 +33,19 @@ class ScheduledSyncInfo:
     sync_summary: str | None = None
     sync_error: str | None = None
     sync_finished_at: str | None = None
+    sync_succeeded_count: int = 0
+    sync_partial_count: int = 0
+    sync_failed_count: int = 0
+
+
+def _count_playlist_results(playlists: object) -> dict[str, int]:
+    counts = {"success": 0, "partial": 0, "failed": 0}
+    if isinstance(playlists, list):
+        for result in playlists:
+            status = result.get("status") if isinstance(result, dict) else None
+            if status in counts:
+                counts[status] += 1
+    return counts
 
 
 def _run_script(script_name: str, *arguments: str) -> str:
@@ -74,6 +87,7 @@ def get_scheduled_sync_info() -> ScheduledSyncInfo:
     try:
         data = json.loads(output)
         sync_state = read_scheduled_sync_state()
+        playlist_counts = _count_playlist_results(sync_state.get("playlists"))
         return ScheduledSyncInfo(
             time=str(data["time"]),
             state=str(data["state"]),
@@ -88,6 +102,9 @@ def get_scheduled_sync_info() -> ScheduledSyncInfo:
             sync_summary=sync_state.get("summary"),
             sync_error=sync_state.get("error") or sync_state.get("maintenance_warning"),
             sync_finished_at=sync_state.get("finished_at"),
+            sync_succeeded_count=playlist_counts["success"],
+            sync_partial_count=playlist_counts["partial"],
+            sync_failed_count=playlist_counts["failed"],
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise WindowsSchedulerError("Windows Task Scheduler returned an invalid response") from exc
@@ -95,4 +112,10 @@ def get_scheduled_sync_info() -> ScheduledSyncInfo:
 
 def set_scheduled_sync_time(time_value: str) -> ScheduledSyncInfo:
     _run_script("update-scheduled-sync.ps1", "-Time", time_value)
+    return get_scheduled_sync_info()
+
+
+def install_scheduled_sync(time_value: str) -> ScheduledSyncInfo:
+    """Register the daily task for the current user; re-registering replaces an existing task."""
+    _run_script("install-scheduled-sync.ps1", "-Time", time_value)
     return get_scheduled_sync_info()

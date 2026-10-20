@@ -72,6 +72,26 @@ def test_set_scheduled_sync_time_updates_then_reads_task(monkeypatch) -> None:
     ]
 
 
+def test_install_scheduled_sync_registers_then_reads_task(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(script_name: str, *args: str) -> str:
+        calls.append((script_name, args))
+        if script_name == "install-scheduled-sync.ps1":
+            return "Installed task"
+        return '{"time":"07:15","state":"Ready","next_run_time":"2026-10-20 07:15"}'
+
+    monkeypatch.setattr(windows_scheduler, "_run_script", fake_run)
+
+    info = windows_scheduler.install_scheduled_sync("07:15")
+
+    assert info.time == "07:15"
+    assert calls == [
+        ("install-scheduled-sync.ps1", ("-Time", "07:15")),
+        ("get-scheduled-sync.ps1", ()),
+    ]
+
+
 def test_run_script_turns_powershell_failure_into_scheduler_error(monkeypatch) -> None:
     monkeypatch.setattr(
         windows_scheduler.subprocess,

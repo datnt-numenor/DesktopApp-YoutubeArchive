@@ -2,44 +2,45 @@
 
 {% block content %}
 <section class="auth-shell">
-    <div class="panel auth-panel">
-        <div class="panel-header">
-            <h1>{{ 'Set your password' if needs_setup else 'Unlock archive' }}</h1>
-            <p>
-                {% if needs_setup %}
-                Create the single password used to open this private archive.
-                {% else %}
-                Enter your local password. No email or username is required.
-                {% endif %}
-            </p>
-        </div>
+    <div class="dash-card auth-panel">
+        <header class="settings-card-head">
+            <span class="settings-card-icon tone-violet"><i class="bi {{ 'bi-shield-lock' if needs_setup else 'bi-unlock' }}"></i></span>
+            <div>
+                <h1>{{ _('Set your password') if needs_setup else _('Unlock the archive') }}</h1>
+                <p>
+                    {% if needs_setup %}
+                    {{ _('Create the single password used to open this private archive.') }}
+                    {% else %}
+                    {{ _('Enter your local password. No email or username is required.') }}
+                    {% endif %}
+                </p>
+            </div>
+        </header>
         {% if error %}
-        <div class="alert alert-danger" role="alert">{{ error }}</div>
+        <div class="download-error" role="alert"><i class="bi bi-exclamation-triangle me-1"></i>{{ error }}</div>
         {% endif %}
         {% if message %}
-        <div class="alert alert-success" role="alert">{{ message }}</div>
+        <div class="auth-message" role="status">{{ message }}</div>
         {% endif %}
-        <form method="post" action="/login" class="d-grid gap-3">
+        <form method="post" action="/login" class="auth-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="next" value="{{ next }}">
-            <div>
-                <label class="form-label" for="password">{{ 'New password' if needs_setup else 'Password' }}</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-key"></i></span>
-                    <input class="form-control" id="password" name="password" type="password" minlength="8" autocomplete="{{ 'new-password' if needs_setup else 'current-password' }}" required autofocus>
-                </div>
+            <div class="password-field">
+                <label class="visually-hidden" for="password">{{ _('New password') if needs_setup else _('Password') }}</label>
+                <i class="bi bi-lock" aria-hidden="true"></i>
+                <input class="form-control" id="password" name="password" type="password" minlength="8" placeholder="{{ _('New password (at least 8 characters)') if needs_setup else _('Password') }}" autocomplete="{{ 'new-password' if needs_setup else 'current-password' }}" required autofocus>
+                <button class="password-eye js-toggle-password" type="button" aria-controls="password" aria-pressed="false" title="{{ _('Show / hide password') }}"><i class="bi bi-eye"></i></button>
             </div>
             {% if needs_setup %}
-            <div>
-                <label class="form-label" for="password_confirm">Confirm password</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="bi bi-key-fill"></i></span>
-                    <input class="form-control" id="password_confirm" name="password_confirm" type="password" minlength="8" autocomplete="new-password" required>
-                </div>
+            <div class="password-field">
+                <label class="visually-hidden" for="password_confirm">{{ _('Confirm password') }}</label>
+                <i class="bi bi-lock" aria-hidden="true"></i>
+                <input class="form-control" id="password_confirm" name="password_confirm" type="password" minlength="8" placeholder="{{ _('Confirm password') }}" autocomplete="new-password" required>
+                <button class="password-eye js-toggle-password" type="button" aria-controls="password_confirm" aria-pressed="false" title="{{ _('Show / hide password') }}"><i class="bi bi-eye"></i></button>
             </div>
             {% endif %}
-            <button class="btn btn-danger" type="submit">
-                <i class="bi bi-unlock me-1"></i>{{ 'Save password and open' if needs_setup else 'Unlock' }}
+            <button class="btn btn-gradient btn-block" type="submit">
+                <i class="bi bi-unlock"></i><span>{{ _('Save password and open') if needs_setup else _('Unlock') }}</span>
             </button>
         </form>
     </div>

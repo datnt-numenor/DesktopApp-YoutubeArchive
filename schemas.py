@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class PlaylistAddRequest(BaseModel):
@@ -37,14 +37,20 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8)
+class OrphanedMediaDeleteRequest(BaseModel):
+    # Names exactly as returned by GET /api/storage/orphans (relative to downloads/).
+    files: list[str] = Field(min_length=1, max_length=20000)
 
 
-class UserUpdate(BaseModel):
-    email: EmailStr | None = None
-    password: str | None = Field(default=None, min_length=8)
+class OrphanedMediaFileSchema(BaseModel):
+    name: str
+    size_bytes: int
+
+
+class OrphanedMediaResponse(BaseModel):
+    files: list[OrphanedMediaFileSchema]
+    count: int
+    total_bytes: int
 
 
 class BaseResponse(BaseModel):
@@ -141,7 +147,6 @@ class PlaylistSchema(BaseModel):
     archive_percent: int = 0
     thumbnail_url: str | None = None
     source_type: str = "YOUTUBE"
-    search_videos: list[PlaylistSearchVideoSchema] = Field(default_factory=list)
 
 
 class PlaylistDetailResponse(BaseModel):
@@ -153,13 +158,3 @@ class PlaylistDetailResponse(BaseModel):
     videos: list[VideoSchema]
     hidden_count: int = 0
     source_type: str = "YOUTUBE"
-
-
-class UserSchema(BaseModel):
-    id: str
-    email: EmailStr
-    storage_used_bytes: int
-    storage_quota_bytes: int
-    playlist_quota: int
-
-    model_config = {"from_attributes": True}

@@ -13,6 +13,9 @@ from urllib.parse import unquote
 from fastapi import HTTPException, Request, status
 
 
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 @dataclass(frozen=True)
 class ImportedMp3:
     path: Path
@@ -31,22 +34,33 @@ def _safe_stem(filename: str) -> str:
 
 
 def _probe_mp3(path: Path, fallback_title: str) -> tuple[str, str, int]:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=format_name,duration:format_tags=title,artist",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name,duration:format_tags=title,artist",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ffprobe was not found; install FFmpeg and add it to PATH",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Could not read the MP3 file") from exc
     if result.returncode != 0:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="File is not a valid MP3")
     try:

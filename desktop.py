@@ -11,12 +11,15 @@ import time
 from contextlib import closing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlparse
 
 import uvicorn
 import webview
 
 from config import LOCAL_DATA_DIR
+from sync_lock import acquire_file_lock
+from downloader import request_download_shutdown
 from main import app
 
 
@@ -29,13 +32,9 @@ AUTH_WINDOW_HEIGHT = 650
 AUTH_WINDOW_MIN_SIZE = (760, 560)
 SERVER_RESTART_DELAY_SECONDS = 1.0
 DESKTOP_LOG_PATH = LOCAL_DATA_DIR / "logs" / "desktop.log"
-AUTH_PATHS = {
-    "/login",
-    "/register",
-    "/forgot-password",
-    "/reset-password",
-    "/verify-email",
-}
+INSTANCE_LOCK_PATH = LOCAL_DATA_DIR / "desktop.lock"
+ALREADY_RUNNING_MESSAGE = "Desktop YouTube Archive đang chạy. Hãy dùng cửa sổ đang mở."
+AUTH_PATHS = {"/login"}
 logger = logging.getLogger("desktop")
 
 
@@ -54,6 +53,25 @@ def configure_desktop_logging() -> None:
         target.addHandler(handler)
         target.setLevel(logging.INFO)
         target.propagate = False
+
+
+def acquire_single_instance_lock(path: Path = INSTANCE_LOCK_PATH) -> BinaryIO | None:
+    """Return a lock held for the process lifetime, or None when another app instance owns it.
+
+    Two instances would run two download queues on one database, and each startup closes the
+    other's in-progress syncs as interrupted.
+    """
+    try:
+        return acquire_file_lock(path)
+    except OSError:
+        return None
+
+
+def show_already_running_message() -> None:
+    if sys.platform == "win32":
+        ctypes.windll.user32.MessageBoxW(None, ALREADY_RUNNING_MESSAGE, "Desktop YouTube Archive", 0x40)
+    else:  # pragma: no cover - desktop target is Windows
+        print(ALREADY_RUNNING_MESSAGE, file=sys.stderr)
 
 
 def configure_windows_app_identity() -> None:
@@ -204,6 +222,11 @@ def open_desktop_window(url: str) -> None:
 
 def main() -> None:
     configure_desktop_logging()
+    instance_lock = acquire_single_instance_lock()
+    if instance_lock is None:
+        logger.info("Another desktop instance is already running; exiting")
+        show_already_running_message()
+        return
     configure_windows_app_identity()
     if not ICON_PATH.is_file():
         raise FileNotFoundError(f"Application icon not found: {ICON_PATH}")
@@ -226,6 +249,8 @@ def main() -> None:
         open_desktop_window(f"http://{HOST}:{port}")
     finally:
         stop_event.set()
+        # Stop yt-dlp first so the server's worker threads can finish within the join timeout.
+        request_download_shutdown()
         server = server_state.get("server")
         if server is not None:
             server.should_exit = True
@@ -234,6 +259,7 @@ def main() -> None:
             logger.error("Local media server did not stop within the shutdown timeout")
         else:
             logger.info("Desktop app stopped")
+        instance_lock.close()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 import logging
+import os
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -40,12 +41,14 @@ async def count_user_playlists(session: AsyncSession, owner_id: str) -> int:
 
 
 async def count_downloaded_media(session: AsyncSession, owner_id: str) -> int:
+    """Count distinct saved songs; one song in several playlists counts once, hidden-only songs not at all."""
     result = await session.execute(
-        select(func.count(PlaylistVideo.video_id))
+        select(func.count(func.distinct(PlaylistVideo.video_id)))
         .join(PlaylistVideo.playlist)
         .where(
             Playlist.owner_id == owner_id,
             PlaylistVideo.local_file_path.is_not(None),
+            PlaylistVideo.hidden_at.is_(None),
         )
     )
     return int(result.scalar_one())
@@ -85,23 +88,6 @@ async def list_playlists(session: AsyncSession, owner_id: str) -> list[PlaylistS
         .order_by(Playlist.created_at.desc())
     )
     playlist_rows = result.all()
-    search_result = await session.execute(
-        select(PlaylistVideo.playlist_id, Video.id, Video.title, Video.channel_name, Video.yt_video_id)
-        .join(PlaylistVideo.video)
-        .join(PlaylistVideo.playlist)
-        .where(Playlist.owner_id == owner_id, PlaylistVideo.hidden_at.is_(None))
-        .order_by(PlaylistVideo.added_at.desc())
-    )
-    search_videos: dict[int, list[PlaylistSearchVideoSchema]] = {}
-    for playlist_id, video_id, title, channel_name, source_id in search_result.all():
-        search_videos.setdefault(playlist_id, []).append(
-            PlaylistSearchVideoSchema(
-                id=video_id,
-                title=title,
-                channel_name=channel_name,
-                source_id=source_id,
-            )
-        )
 
     playlists = []
     for playlist, video_count, downloaded_count, thumbnail_url in playlist_rows:
@@ -120,62 +106,91 @@ async def list_playlists(session: AsyncSession, owner_id: str) -> list[PlaylistS
                 archive_percent=round(downloaded / total * 100) if total else 0,
                 thumbnail_url=thumbnail_url,
                 source_type=playlist.source_type.value,
-                search_videos=search_videos.get(playlist.id, []),
             )
         )
     return playlists
 
 
-async def list_admin_users(session: AsyncSession) -> list[dict[str, Any]]:
-    result = await session.execute(
-        select(User, func.count(Playlist.id))
-        .outerjoin(Playlist, Playlist.owner_id == User.id)
-        .group_by(User.id)
-        .order_by(User.created_at.desc())
+async def list_playlist_search_index(session: AsyncSession, owner_id: str) -> dict[int, list[PlaylistSearchVideoSchema]]:
+    """Visible songs per playlist, for the dashboard search; loaded on demand instead of with every page."""
+    search_result = await session.execute(
+        select(PlaylistVideo.playlist_id, Video.id, Video.title, Video.channel_name, Video.yt_video_id)
+        .join(PlaylistVideo.video)
+        .join(PlaylistVideo.playlist)
+        .where(Playlist.owner_id == owner_id, PlaylistVideo.hidden_at.is_(None))
+        .order_by(PlaylistVideo.added_at.desc())
     )
-    return [
-        {
-            "user": user,
-            "playlist_count": int(playlist_count or 0),
-        }
-        for user, playlist_count in result.all()
-    ]
+    search_videos: dict[int, list[PlaylistSearchVideoSchema]] = {}
+    for playlist_id, video_id, title, channel_name, source_id in search_result.all():
+        search_videos.setdefault(playlist_id, []).append(
+            PlaylistSearchVideoSchema(id=video_id, title=title, channel_name=channel_name, source_id=source_id)
+        )
+    return search_videos
 
 
-async def update_user_admin_settings(
+async def find_orphaned_media_files(session: AsyncSession, data_dir: Path) -> list[Path]:
+    """Return finished MP3 files under downloads/ that no playlist (visible or hidden) references.
+
+    A file counts as referenced when its resolved path or its file name matches a stored
+    local_file_path, so paths saved by older versions in another form are never treated as unused.
+    """
+    downloads_dir = data_dir / "downloads"
+    if not downloads_dir.is_dir():
+        return []
+
+    result = await session.execute(
+        select(PlaylistVideo.local_file_path).where(PlaylistVideo.local_file_path.is_not(None)).distinct()
+    )
+    referenced_paths: set[str] = set()
+    referenced_names: set[str] = set()
+    for stored_path in result.scalars():
+        path = Path(stored_path)
+        if not path.is_absolute():
+            path = data_dir / path
+        referenced_paths.add(os.path.normcase(str(path.resolve())))
+        referenced_names.add(os.path.normcase(PureWindowsPath(stored_path).name))
+
+    orphans = []
+    for path in downloads_dir.rglob("*.mp3"):
+        relative_parts = path.relative_to(downloads_dir).parts
+        # Skip in-flight uploads and ffmpeg's partial "<id>.temp.mp3" output.
+        if ".uploads" in relative_parts or ".temp." in path.name or not path.is_file():
+            continue
+        if os.path.normcase(path.name) in referenced_names:
+            continue
+        if os.path.normcase(str(path.resolve())) in referenced_paths:
+            continue
+        orphans.append(path)
+    return sorted(orphans)
+
+
+async def get_playlist_for_owner(
     session: AsyncSession,
-    user_id: str,
+    playlist_id: int,
+    owner_id: str,
     *,
-    is_active: bool,
-    playlist_quota: int,
-    storage_quota_bytes: int,
-) -> User:
-    user = await session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    user.is_active = is_active
-    user.playlist_quota = playlist_quota
-    user.storage_quota_bytes = storage_quota_bytes
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def get_playlist_for_owner(session: AsyncSession, playlist_id: int, owner_id: str) -> Playlist:
-    result = await session.execute(
-        select(Playlist)
-        .where(Playlist.id == playlist_id, Playlist.owner_id == owner_id)
-        .options(selectinload(Playlist.playlist_videos).selectinload(PlaylistVideo.video))
-        .execution_options(populate_existing=True)
-    )
+    load_videos: bool = True,
+) -> Playlist:
+    """Return the owner's playlist; load_videos=False skips eager-loading every song when the
+    caller only needs ownership and the playlist's own columns."""
+    query = select(Playlist).where(Playlist.id == playlist_id, Playlist.owner_id == owner_id)
+    if load_videos:
+        query = query.options(selectinload(Playlist.playlist_videos).selectinload(PlaylistVideo.video))
+    result = await session.execute(query.execution_options(populate_existing=True))
     playlist = result.scalar_one_or_none()
     if not playlist:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Playlist does not belong to this user")
     return playlist
 
 
-async def get_custom_playlist_for_owner(session: AsyncSession, playlist_id: int, owner_id: str) -> Playlist:
-    playlist = await get_playlist_for_owner(session, playlist_id, owner_id)
+async def get_custom_playlist_for_owner(
+    session: AsyncSession,
+    playlist_id: int,
+    owner_id: str,
+    *,
+    load_videos: bool = True,
+) -> Playlist:
+    playlist = await get_playlist_for_owner(session, playlist_id, owner_id, load_videos=load_videos)
     if playlist.source_type != PlaylistSource.CUSTOM:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This action requires a custom playlist")
     return playlist
@@ -249,9 +264,10 @@ async def add_library_videos_to_custom_playlist(
     if not sources:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No downloaded songs were selected")
 
+    existing_by_video_id = {association.video_id: association for association in playlist.playlist_videos}
     added = 0
     for video_id, source in sources.items():
-        target = await _get_playlist_video(session, playlist.id, video_id)
+        target = existing_by_video_id.get(video_id)
         if target:
             target.hidden_at = None
             if not target.local_file_path:
@@ -277,7 +293,7 @@ async def add_youtube_metadata_to_custom_playlist(
     owner_id: str,
     metadata: dict[str, Any],
 ) -> PlaylistVideo:
-    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner_id)
+    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
     video = await _get_video_by_youtube_id(session, metadata["yt_video_id"])
     if video is None:
         video = _new_video_from_metadata(metadata)
@@ -327,7 +343,7 @@ async def add_local_file_to_custom_playlist(
     file_size: int,
     count_storage: bool,
 ) -> PlaylistVideo:
-    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner.id)
+    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner.id, load_videos=False)
     local_id = f"local_{digest[:56]}"
     video = await _get_video_by_youtube_id(session, local_id)
     if video is None:
@@ -366,6 +382,16 @@ async def add_local_file_to_custom_playlist(
 async def _get_video_by_youtube_id(session: AsyncSession, yt_video_id: str) -> Video | None:
     result = await session.execute(select(Video).where(Video.yt_video_id == yt_video_id))
     return result.scalar_one_or_none()
+
+
+async def _get_videos_by_youtube_ids(session: AsyncSession, yt_video_ids: list[str]) -> dict[str, Video]:
+    unique_ids = list(dict.fromkeys(yt_video_ids))
+    videos: dict[str, Video] = {}
+    # Chunk to stay well below SQLite's bound-parameter limit on large playlists.
+    for start in range(0, len(unique_ids), 500):
+        result = await session.execute(select(Video).where(Video.yt_video_id.in_(unique_ids[start : start + 500])))
+        videos.update((video.yt_video_id, video) for video in result.scalars())
+    return videos
 
 
 async def _get_playlist_video(session: AsyncSession, playlist_id: int, video_id: int) -> PlaylistVideo | None:
@@ -413,52 +439,6 @@ def _new_video_from_metadata(metadata: dict[str, Any]) -> Video:
             else VideoStatus.DELETED_ON_YT
         ),
     )
-
-
-async def upsert_playlist_from_metadata(session: AsyncSession, owner: User, metadata: dict[str, Any]) -> Playlist:
-    result = await session.execute(
-        select(Playlist).where(
-            Playlist.owner_id == owner.id,
-            Playlist.yt_playlist_id == metadata["yt_playlist_id"],
-        )
-    )
-    playlist = result.scalar_one_or_none()
-    if not playlist:
-        total = await count_user_playlists(session, owner.id)
-        if total >= owner.playlist_quota:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Playlist quota exceeded")
-        playlist = Playlist(
-            owner_id=owner.id,
-            yt_playlist_id=metadata["yt_playlist_id"],
-            title=metadata["title"],
-            url=metadata["url"],
-        )
-        session.add(playlist)
-        await session.flush()
-    else:
-        playlist.title = metadata["title"]
-        playlist.url = metadata["url"]
-
-    for video_data in metadata["videos"]:
-        video = await _get_video_by_youtube_id(session, video_data["yt_video_id"])
-        if not video:
-            video = _new_video_from_metadata(video_data)
-            session.add(video)
-            await session.flush()
-        else:
-            _apply_video_metadata(video, video_data)
-            if not video_data.get("is_available_on_youtube", True):
-                video.status = VideoStatus.DELETED_ON_YT
-            elif video.status == VideoStatus.DELETED_ON_YT:
-                video.status = VideoStatus.AVAILABLE
-
-        association = await _get_playlist_video(session, playlist.id, video.id)
-        if not association:
-            session.add(PlaylistVideo(playlist_id=playlist.id, video_id=video.id))
-
-    await session.commit()
-    await session.refresh(playlist)
-    return playlist
 
 
 async def get_or_create_pending_playlist(
@@ -536,19 +516,25 @@ async def sync_playlist_metadata(
                     if newly_unavailable is not None:
                         newly_unavailable.append(association.video)
 
+    videos_by_yt_id = await _get_videos_by_youtube_ids(
+        session, [video_data["yt_video_id"] for video_data in metadata["videos"]]
+    )
+    associations_by_video_id = {association.video_id: association for association in playlist.playlist_videos}
     for video_data in metadata["videos"]:
-        video = await _get_video_by_youtube_id(session, video_data["yt_video_id"])
+        video = videos_by_yt_id.get(video_data["yt_video_id"])
         if not video:
             video = _new_video_from_metadata(video_data)
             session.add(video)
             await session.flush()
+            videos_by_yt_id[video.yt_video_id] = video
         else:
             _apply_video_metadata(video, video_data)
 
-        association = await _get_playlist_video(session, playlist.id, video.id)
+        association = associations_by_video_id.get(video.id)
         if not association:
             association = PlaylistVideo(playlist_id=playlist.id, video_id=video.id)
             session.add(association)
+            associations_by_video_id[video.id] = association
 
         association.removed_from_youtube_playlist_at = None
         if not video_data.get("is_available_on_youtube", True):
@@ -739,7 +725,7 @@ async def delete_playlist(session: AsyncSession, playlist_id: int, owner_id: str
 
 
 async def set_playlist_auto_sync(session: AsyncSession, playlist_id: int, owner_id: str, auto_sync: bool) -> Playlist:
-    playlist = await get_playlist_for_owner(session, playlist_id, owner_id)
+    playlist = await get_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
     if playlist.source_type != PlaylistSource.YOUTUBE:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom playlists do not support auto-sync")
     playlist.auto_sync = auto_sync
@@ -922,6 +908,7 @@ async def get_today_sync_history(session: AsyncSession, owner_id: str) -> dict[s
     runs = list(result.scalars().unique())
     return {
         "date_label": local_start.strftime("%d/%m/%Y"),
+        "weekday_index": local_start.weekday(),
         "downloaded_count": sum(run.downloaded_count for run in runs),
         "failed_count": sum(run.failed_count for run in runs),
         "unavailable_count": sum(run.unavailable_count for run in runs),
@@ -952,17 +939,13 @@ async def get_today_sync_history(session: AsyncSession, owner_id: str) -> dict[s
     }
 
 
-async def get_scheduled_sync_history(
-    session: AsyncSession,
+def _scheduled_history_filters(
     owner_id: str,
-    *,
     date_from: date,
     date_to: date,
-    playlist_filter: str | None = None,
-    status_filter: SyncRunStatus | None = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> dict[str, Any]:
+    playlist_filter: str | None,
+    status_filter: SyncRunStatus | None,
+) -> list[Any]:
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     utc_start = datetime.combine(date_from, time.min, tzinfo=local_tz).astimezone(timezone.utc)
     utc_end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=local_tz).astimezone(timezone.utc)
@@ -984,6 +967,63 @@ async def get_scheduled_sync_history(
             filters.append(SyncRun.playlist_id == int(playlist_filter))
     if status_filter:
         filters.append(SyncRun.status == status_filter)
+    return filters
+
+
+async def list_scheduled_sync_events(
+    session: AsyncSession,
+    owner_id: str,
+    event_type: SyncEventType,
+    *,
+    date_from: date,
+    date_to: date,
+    playlist_filter: str | None = None,
+    status_filter: SyncRunStatus | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Songs behind one history counter (failed downloads, removed videos), newest first."""
+    filters = _scheduled_history_filters(owner_id, date_from, date_to, playlist_filter, status_filter)
+    filters.append(SyncEvent.event_type == event_type)
+    total = int(
+        (await session.execute(select(func.count(SyncEvent.id)).join(SyncRun).where(*filters))).scalar_one() or 0
+    )
+    result = await session.execute(
+        select(SyncEvent, SyncRun.playlist_title, SyncRun.started_at)
+        .join(SyncRun)
+        .where(*filters)
+        .order_by(SyncRun.started_at.desc(), SyncEvent.id.desc())
+        .limit(max(1, min(limit, 500)))
+    )
+    events = []
+    for event, playlist_title, started_at in result.all():
+        local_started = _as_local_time(started_at)
+        events.append(
+            {
+                "yt_video_id": event.yt_video_id,
+                "video_title": event.video_title,
+                "message": event.message,
+                "playlist_title": playlist_title,
+                "date_label": local_started.strftime("%d/%m/%Y"),
+                "time_label": local_started.strftime("%H:%M"),
+            }
+        )
+    return {"events": events, "total": total}
+
+
+async def get_scheduled_sync_history(
+    session: AsyncSession,
+    owner_id: str,
+    *,
+    date_from: date,
+    date_to: date,
+    playlist_filter: str | None = None,
+    status_filter: SyncRunStatus | None = None,
+    page: int = 1,
+    page_size: int = 10,
+) -> dict[str, Any]:
+    """Scheduled sync history grouped by local day; pages hold `page_size` days, not runs."""
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    filters = _scheduled_history_filters(owner_id, date_from, date_to, playlist_filter, status_filter)
 
     summary_result = await session.execute(
         select(
@@ -995,17 +1035,28 @@ async def get_scheduled_sync_history(
     )
     total_runs, downloaded_count, failed_count, unavailable_count = summary_result.one()
     total_runs = int(total_runs or 0)
-    page_size = max(1, min(page_size, 100))
-    total_pages = max(1, (total_runs + page_size - 1) // page_size)
+
+    # Only ids and start times are needed to split runs into local days; events are loaded
+    # afterwards for the days on the requested page.
+    index_result = await session.execute(
+        select(SyncRun.id, SyncRun.started_at).where(*filters).order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+    )
+    run_ids_by_day: dict[str, list[int]] = {}
+    for run_id, started_at in index_result.all():
+        run_ids_by_day.setdefault(_as_local_time(started_at).date().isoformat(), []).append(run_id)
+    day_keys = list(run_ids_by_day)
+    total_days = len(day_keys)
+    page_size = max(1, min(page_size, 60))
+    total_pages = max(1, (total_days + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
+    page_day_keys = day_keys[(page - 1) * page_size : page * page_size]
+    page_run_ids = [run_id for key in page_day_keys for run_id in run_ids_by_day[key]]
 
     runs_result = await session.execute(
         select(SyncRun)
-        .where(*filters)
+        .where(SyncRun.id.in_(page_run_ids))
         .options(selectinload(SyncRun.events))
         .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
     runs = list(runs_result.scalars().unique())
 
@@ -1050,6 +1101,11 @@ async def get_scheduled_sync_history(
             group = {
                 "date_key": date_key,
                 "date_label": local_started.strftime("%d/%m/%Y"),
+                "weekday_index": local_started.weekday(),
+                "run_count": 0,
+                "downloaded_count": 0,
+                "failed_count": 0,
+                "unavailable_count": 0,
                 "runs": [],
             }
             groups_by_date[date_key] = group
@@ -1059,6 +1115,10 @@ async def get_scheduled_sync_history(
             started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
             finished = run.finished_at.replace(tzinfo=timezone.utc) if run.finished_at.tzinfo is None else run.finished_at
             duration_seconds = max(0, round((finished - started).total_seconds()))
+        group["run_count"] += 1
+        group["downloaded_count"] += run.downloaded_count
+        group["failed_count"] += run.failed_count
+        group["unavailable_count"] += run.unavailable_count
         group["runs"].append(
             {
                 "id": run.id,
@@ -1093,8 +1153,32 @@ async def get_scheduled_sync_history(
         "playlist_options": playlist_options,
         "page": page,
         "page_size": page_size,
+        "total_days": total_days,
         "total_pages": total_pages,
     }
+
+
+async def fail_interrupted_app_sync_runs(session: AsyncSession) -> int:
+    """Close runs the desktop app started before it last exited.
+
+    Only the app process runs MANUAL/IN_APP syncs, so when it starts none of them can still be
+    in progress. Scheduled runs belong to Task Scheduler and keep the 6-hour stale rule.
+    """
+    result = await session.execute(
+        update(SyncRun)
+        .where(
+            SyncRun.status == SyncRunStatus.RUNNING,
+            SyncRun.source.in_([SyncSource.MANUAL, SyncSource.IN_APP]),
+        )
+        .values(
+            status=SyncRunStatus.FAILED,
+            error=func.coalesce(SyncRun.error, "The app closed before this sync finished"),
+            finished_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    return int(result.rowcount or 0)
 
 
 async def cleanup_sync_history(session: AsyncSession, retention_days: int = 30) -> int:

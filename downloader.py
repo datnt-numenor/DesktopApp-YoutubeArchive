@@ -1,9 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import subprocess
-import time
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -38,6 +39,55 @@ class DownloaderError(RuntimeError):
     pass
 
 
+class DownloadCancelled(RuntimeError):
+    """Raised when the app is closing; deliberately not a DownloaderError so it is never
+    recorded as a per-video download failure."""
+
+
+# yt-dlp runs in worker threads. Track its processes so closing the app can stop them
+# instead of waiting for a long download (and its ffmpeg child) to finish.
+_active_processes: set[subprocess.Popen[str]] = set()
+_active_processes_lock = threading.Lock()
+_shutdown_requested = threading.Event()
+
+
+def _raise_if_shutting_down() -> None:
+    if _shutdown_requested.is_set():
+        raise DownloadCancelled("The app is closing; the download was cancelled")
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            # yt-dlp starts ffmpeg for MP3 conversion; /T stops that child as well.
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning("taskkill failed for yt-dlp process %s", process.pid, exc_info=True)
+    if process.poll() is None:
+        process.kill()
+
+
+def request_download_shutdown() -> None:
+    """Stop running yt-dlp processes and refuse to start new ones."""
+    _shutdown_requested.set()
+    with _active_processes_lock:
+        processes = list(_active_processes)
+    for process in processes:
+        _kill_process_tree(process)
+
+
+def reset_download_shutdown() -> None:
+    _shutdown_requested.clear()
+
+
 def canonicalize_playlist_url(url: str) -> str:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
@@ -49,6 +99,14 @@ def canonicalize_playlist_url(url: str) -> str:
     if parsed.netloc.endswith("youtube.com") or parsed.netloc.endswith("youtu.be"):
         return urlunparse(("https", "www.youtube.com", "/playlist", "", urlencode({"list": playlist_id}), ""))
     return url
+
+
+def _require_web_url(url: str) -> str:
+    """Reject anything yt-dlp could interpret as an option or a local file."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise DownloaderError("Only http(s) YouTube URLs are supported.")
+    return url.strip()
 
 
 def extract_playlist_id_from_url(url: str) -> str:
@@ -135,21 +193,37 @@ def _run_ytdlp(arguments: list[str], *, force_update: bool = False, timeout: int
         "utf-8",
         *arguments,
     ]
+    _raise_if_shutting_down()
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             creationflags=CREATE_NO_WINDOW,
-            check=False,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise DownloaderError(f"yt-dlp timed out after {timeout} seconds") from exc
     except OSError as exc:
         raise DownloaderError(f"Could not start yt-dlp: {exc}") from exc
+
+    with _active_processes_lock:
+        _active_processes.add(process)
+    try:
+        # Shutdown may have been requested between the check above and registration.
+        if _shutdown_requested.is_set():
+            _kill_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_tree(process)
+            process.communicate()
+            raise DownloaderError(f"yt-dlp timed out after {timeout} seconds") from exc
+    finally:
+        with _active_processes_lock:
+            _active_processes.discard(process)
+    _raise_if_shutting_down()
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _run_ytdlp_json(arguments: list[str]) -> dict[str, Any]:
@@ -166,8 +240,8 @@ def _run_ytdlp_json(arguments: list[str]) -> dict[str, Any]:
 
 
 def _extract_playlist_sync(url: str) -> dict[str, Any]:
-    playlist_url = canonicalize_playlist_url(url)
-    info = _run_ytdlp_json(["--flat-playlist", "--ignore-errors", "--yes-playlist", playlist_url])
+    playlist_url = _require_web_url(canonicalize_playlist_url(url))
+    info = _run_ytdlp_json(["--flat-playlist", "--ignore-errors", "--yes-playlist", "--", playlist_url])
 
     if not info:
         raise DownloaderError("yt-dlp did not return playlist metadata")
@@ -190,7 +264,7 @@ async def extract_playlist_metadata(url: str) -> dict[str, Any]:
 
 
 def _extract_video_sync(url: str) -> dict[str, Any]:
-    info = _run_ytdlp_json(["--no-playlist", url])
+    info = _run_ytdlp_json(["--no-playlist", "--", _require_web_url(url)])
     if not info:
         raise DownloaderError("yt-dlp did not return video metadata")
     metadata = _normalize_video(info)
@@ -204,19 +278,10 @@ async def extract_video_metadata(url: str) -> dict[str, Any]:
 
 
 def _find_downloaded_file(video_id: str, output_dir: Path) -> Path | None:
-    preferred_ext = ".mp3"
-    preferred = output_dir / f"{video_id}{preferred_ext}"
-    if preferred.exists():
-        return preferred
-
-    candidates = [
-        path
-        for path in output_dir.glob(f"{video_id}.*")
-        if path.is_file() and not path.name.endswith(".part") and path.suffix.lower() == preferred_ext
-    ]
-    if not candidates:
-        return None
-    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]
+    # Only the final name counts: ffmpeg writes "<id>.temp.mp3" while converting, and a killed
+    # or crashed conversion must not be mistaken for a finished download.
+    preferred = output_dir / f"{video_id}.mp3"
+    return preferred if preferred.is_file() else None
 
 
 def _cleanup_temporary_downloads(
@@ -235,7 +300,11 @@ def _cleanup_temporary_downloads(
         if keep_resolved and path.resolve() == keep_resolved:
             continue
 
-        should_delete = path.name.endswith(".part") or path.suffix.lower() in temporary_suffixes
+        should_delete = (
+            path.name.endswith(".part")
+            or path.suffix.lower() in temporary_suffixes
+            or path.name.startswith(f"{video_id}.temp.")
+        )
         if (keep_path and keep_path.suffix.lower() == ".mp3") or remove_source_audio:
             should_delete = should_delete or path.suffix.lower() in {".webm", ".m4a", ".opus"}
 
@@ -270,6 +339,7 @@ def _download_once(video_id: str, output_dir: Path, *, force_update: bool = Fals
             "192K",
             "--output",
             outtmpl,
+            "--",
             url,
         ],
         force_update=force_update,
@@ -298,6 +368,9 @@ def _download_video_sync(video_id: str, output_dir: Path) -> Path:
     for attempt in range(attempts):
         try:
             return _download_once(video_id, output_dir, force_update=attempt == 1)
+        except DownloadCancelled:
+            _cleanup_temporary_downloads(video_id, output_dir, remove_source_audio=True)
+            raise
         except DownloaderError as exc:
             last_error = exc
             _cleanup_temporary_downloads(video_id, output_dir, remove_source_audio=True)
@@ -312,7 +385,8 @@ def _download_video_sync(video_id: str, output_dir: Path) -> Path:
                 attempts,
                 exc,
             )
-            time.sleep(jittered_delay)
+            if _shutdown_requested.wait(jittered_delay):
+                raise DownloadCancelled("The app is closing; the download was cancelled")
 
     raise last_error or DownloaderError(f"No downloaded file found for video {video_id}")
 

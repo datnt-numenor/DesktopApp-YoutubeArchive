@@ -1,5 +1,8 @@
 from pathlib import Path
 import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
@@ -97,7 +100,7 @@ def test_transient_403_is_retried_with_forced_update(monkeypatch, tmp_path: Path
         return target
 
     monkeypatch.setattr(downloader, "_download_once", fake_download)
-    monkeypatch.setattr(downloader.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(downloader, "DOWNLOAD_RETRY_DELAYS_SECONDS", (0, 0, 0))
     monkeypatch.setattr(downloader.random, "uniform", lambda _low, _high: 1.0)
 
     result = downloader._download_video_sync("video789", tmp_path)
@@ -120,3 +123,83 @@ def test_unavailable_video_is_not_retried(monkeypatch, tmp_path: Path) -> None:
         downloader._download_video_sync("private123", tmp_path)
 
     assert attempts == 1
+
+
+@pytest.mark.parametrize("url", ["--exec=calc", "file:///C:/Windows/win.ini", "youtube.com/watch?v=abc"])
+def test_metadata_extraction_rejects_non_web_urls_before_running_ytdlp(monkeypatch, url: str) -> None:
+    def fail_if_called(_arguments):
+        raise AssertionError("yt-dlp must not run for an invalid URL")
+
+    monkeypatch.setattr(downloader, "_run_ytdlp_json", fail_if_called)
+
+    with pytest.raises(downloader.DownloaderError):
+        downloader._extract_video_sync(url)
+
+
+def test_metadata_extraction_separates_url_from_ytdlp_options(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(arguments):
+        captured["arguments"] = arguments
+        return {"id": "abc", "title": "Song"}
+
+    monkeypatch.setattr(downloader, "_run_ytdlp_json", fake_run)
+
+    downloader._extract_video_sync("https://www.youtube.com/watch?v=abc")
+
+    assert captured["arguments"][-2:] == ["--", "https://www.youtube.com/watch?v=abc"]
+
+
+def test_shutdown_kills_running_ytdlp_and_blocks_new_runs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        downloader,
+        "ytdlp_base_command",
+        lambda **_kwargs: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    outcome: dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            downloader._run_ytdlp(["https://www.youtube.com/watch?v=abc"], timeout=60)
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not downloader._active_processes and time.monotonic() < deadline:
+        time.sleep(0.05)
+    try:
+        downloader.request_download_shutdown()
+        worker.join(timeout=15)
+
+        assert not worker.is_alive()
+        assert isinstance(outcome.get("error"), downloader.DownloadCancelled)
+        assert not downloader._active_processes
+        with pytest.raises(downloader.DownloadCancelled):
+            downloader._run_ytdlp(["https://www.youtube.com/watch?v=abc"])
+    finally:
+        downloader.reset_download_shutdown()
+
+
+def test_retry_wait_is_interrupted_by_shutdown(monkeypatch, tmp_path: Path) -> None:
+    def failing_download(_video_id: str, _output_dir: Path, *, force_update: bool = False) -> Path:
+        downloader.request_download_shutdown()
+        raise downloader.DownloaderError("ERROR: HTTP Error 503: Service Unavailable")
+
+    monkeypatch.setattr(downloader, "_download_once", failing_download)
+    try:
+        with pytest.raises(downloader.DownloadCancelled):
+            downloader._download_video_sync("video503", tmp_path)
+    finally:
+        downloader.reset_download_shutdown()
+
+
+def test_partial_ffmpeg_output_is_not_treated_as_finished_download(tmp_path: Path) -> None:
+    partial = tmp_path / "video321.temp.mp3"
+    partial.write_bytes(b"half")
+
+    assert downloader._find_downloaded_file("video321", tmp_path) is None
+
+    downloader._cleanup_temporary_downloads("video321", tmp_path)
+    assert not partial.exists()

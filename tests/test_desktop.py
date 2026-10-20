@@ -170,5 +170,31 @@ def test_desktop_window_maximizes_after_login_and_restores_after_logout() -> Non
 
 def test_desktop_auth_routes_are_detected() -> None:
     assert desktop.is_auth_url("http://127.0.0.1:8765/login?next=/")
-    assert desktop.is_auth_url("http://127.0.0.1:8765/reset-password?token=abc")
+    assert not desktop.is_auth_url("http://127.0.0.1:8765/reset-password?token=abc")
     assert not desktop.is_auth_url("http://127.0.0.1:8765/settings")
+
+
+def test_second_desktop_instance_is_refused_until_the_first_exits(tmp_path) -> None:
+    lock_path = tmp_path / "desktop.lock"
+
+    first = desktop.acquire_single_instance_lock(lock_path)
+    second = desktop.acquire_single_instance_lock(lock_path)
+    assert first is not None
+    assert second is None
+
+    first.close()
+    third = desktop.acquire_single_instance_lock(lock_path)
+    assert third is not None
+    third.close()
+
+
+def test_second_instance_exits_before_starting_a_server(monkeypatch) -> None:
+    shown = []
+    monkeypatch.setattr(desktop, "configure_desktop_logging", lambda: None)
+    monkeypatch.setattr(desktop, "acquire_single_instance_lock", lambda: None)
+    monkeypatch.setattr(desktop, "show_already_running_message", lambda: shown.append(True))
+    monkeypatch.setattr(desktop, "choose_local_port", lambda: pytest.fail("a second instance must not start a server"))
+
+    desktop.main()
+
+    assert shown == [True]

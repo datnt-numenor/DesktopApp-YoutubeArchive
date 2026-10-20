@@ -1,0 +1,164 @@
+{# The two Windows Task Scheduler cards on the Settings page.
+   schedule_loading=True renders placeholders so the page never waits for PowerShell. #}
+{% set sync_status_labels = {
+    'success': (_('Succeeded'), 'success', 'bi-check-lg'),
+    'partial': (_('Partly completed'), 'warning', 'bi-exclamation-lg'),
+    'failed': (_('Failed'), 'danger', 'bi-x-lg'),
+    'skipped': (_('Skipped'), 'warning', 'bi-skip-forward'),
+    'running': (_('Running'), 'info', 'bi-arrow-repeat'),
+} %}
+    <article class="dash-card settings-card" id="syncScheduleCard"{% if schedule_loading %} data-loading="true" data-error-text="{{ _('Could not load the sync schedule.') }}" data-retry-text="{{ _('Try again') }}" data-loading-text="{{ _('Loading the sync schedule…') }}"{% endif %}>
+        <header class="settings-card-head">
+            <span class="settings-card-icon tone-violet"><i class="bi bi-clock"></i></span>
+            <div>
+                <h2>{{ _('Daily MP3 sync time') }}</h2>
+                <p>{{ _('Schedule an automatic MP3 sync of your saved playlists.') }}</p>
+            </div>
+        </header>
+
+        <form id="syncScheduleForm" class="settings-form" data-installed="{{ 'true' if scheduled_sync else 'false' }}">
+            <div class="settings-time-row">
+                <label class="form-label" for="syncTime">{{ _('Run time') }}</label>
+                <div class="input-with-icon">
+                    <input class="form-control" id="syncTime" type="time" value="{{ scheduled_sync.time if scheduled_sync else '12:00' }}" required{% if schedule_loading %} disabled{% endif %}>
+                    <i class="bi bi-clock" aria-hidden="true"></i>
+                </div>
+            </div>
+
+            {% if schedule_loading %}
+            <div class="settings-inset settings-empty" data-schedule-status role="status">
+                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                <span data-schedule-status-text>{{ _('Loading the sync schedule…') }}</span>
+            </div>
+            {% elif scheduled_sync %}
+            <div class="settings-inset schedule-info">
+                <div class="schedule-next">
+                    <span class="schedule-next-icon"><i class="bi bi-calendar3"></i></span>
+                    <div>
+                        <small>{{ _('Next run') }}</small>
+                        <strong>{{ scheduled_sync.next_run_time|local_datetime(weekday=True) if scheduled_sync.next_run_time else _('Not scheduled') }}</strong>
+                    </div>
+                </div>
+                <dl class="info-list">
+                    <div>
+                        <dt><i class="bi bi-gear"></i>{{ _('Windows Task Scheduler') }}</dt>
+                        <dd>
+                            <span class="status-dot-label {{ 'is-error' if scheduled_sync.state == 'Disabled' else '' }}">
+                                {{ _('Active') if scheduled_sync.state in ['Ready', 'Running'] else scheduled_sync.state }}
+                            </span>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt><i class="bi bi-clock-history"></i>{{ _('Last run') }}</dt>
+                        <dd>{{ scheduled_sync.last_run_time|local_datetime if scheduled_sync.last_run_time else _('Never run') }}</dd>
+                    </div>
+                    <div>
+                        <dt><i class="bi bi-file-earmark-text"></i>{{ _('Result') }}</dt>
+                        <dd>
+                            {% if scheduled_sync.last_task_result_hex %}
+                            {{ scheduled_sync.last_task_result_hex }} ({{ _('Succeeded') if scheduled_sync.last_task_result == 0 else _('Has errors') }})
+                            {% else %}—{% endif %}
+                        </dd>
+                    </div>
+                </dl>
+                <div class="schedule-flags">
+                    <span class="{{ 'is-on' if scheduled_sync.wake_to_run else '' }}"><i class="bi bi-moon-stars"></i>{{ _('Wake the computer: {value}', value=_('On') if scheduled_sync.wake_to_run else _('Off')) }}</span>
+                    <span class="{{ 'is-on' if scheduled_sync.disallow_start_if_on_batteries else '' }}"><i class="bi bi-plug"></i>{{ _('Needs AC power: {value}', value=_('Yes') if scheduled_sync.disallow_start_if_on_batteries else _('No')) }}</span>
+                    <span class="{{ 'is-on' if scheduled_sync.start_when_available else '' }}"><i class="bi bi-skip-end"></i>{{ _('Catch up missed runs: {value}', value=_('On') if scheduled_sync.start_when_available else _('Off')) }}</span>
+                </div>
+            </div>
+            {% if scheduled_sync.last_task_result and scheduled_sync.last_task_result != 0 %}
+            <div class="download-error">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                {{ _('The last Windows task returned {code}. See the sync status next to this card.', code=scheduled_sync.last_task_result_hex) }}
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="download-error">
+                <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync_error or _('The sync task is not installed in Windows Task Scheduler.') }}
+            </div>
+            <p class="settings-note">
+                {{ _('Automatic sync runs through Windows Task Scheduler, even while the app is closed. Choose a time and install the daily task.') }}
+            </p>
+            {% endif %}
+
+            <button class="btn btn-gradient btn-block" type="submit"{% if schedule_loading %} disabled{% endif %}>
+                {% if schedule_loading or scheduled_sync %}
+                <i class="bi bi-floppy"></i><span>{{ _('Save changes') }}</span>
+                {% else %}
+                <i class="bi bi-calendar-plus"></i><span>{{ _('Install daily sync') }}</span>
+                {% endif %}
+            </button>
+        </form>
+    </article>
+
+    <article class="dash-card settings-card" id="syncStatusCard">
+        <header class="settings-card-head">
+            <span class="settings-card-icon tone-cyan"><i class="bi bi-arrow-repeat"></i></span>
+            <div>
+                <h2>{{ _('Sync status') }}</h2>
+                <p>{{ _('Result and statistics of the latest sync.') }}</p>
+            </div>
+        </header>
+
+        {% if schedule_loading %}
+        <div class="settings-inset settings-empty" data-schedule-status role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span data-schedule-status-text>{{ _('Loading the sync schedule…') }}</span>
+        </div>
+        {% elif scheduled_sync and scheduled_sync.sync_status %}
+        {% set status_info = sync_status_labels.get(scheduled_sync.sync_status, (scheduled_sync.sync_status|capitalize, 'info', 'bi-info-lg')) %}
+        <div class="settings-inset sync-health">
+            <div class="sync-health-main">
+                <span class="sync-health-badge tone-{{ status_info[1] }}"><i class="bi {{ status_info[2] }}"></i></span>
+                <div>
+                    <small>{{ _('Latest sync') }}</small>
+                    <strong class="sync-health-label tone-{{ status_info[1] }}">{{ status_info[0] }}</strong>
+                    <span>
+                        {{ scheduled_sync.sync_finished_at|local_datetime if scheduled_sync.sync_finished_at else _('Running') }}
+                        {% if scheduled_sync.last_task_result_hex %}({{ scheduled_sync.last_task_result_hex }}){% endif %}
+                    </span>
+                </div>
+            </div>
+            <div class="sync-health-side">
+                <div>
+                    <strong>{{ scheduled_sync.sync_succeeded_count + scheduled_sync.sync_partial_count }}</strong>
+                    <small>{{ _('playlists synced') }}</small>
+                </div>
+                <div>
+                    <strong>{{ scheduled_sync.sync_failed_count }}</strong>
+                    <small>{{ _('failed') }}</small>
+                </div>
+            </div>
+        </div>
+
+        <h3 class="settings-subheading">{{ _('Result summary') }}</h3>
+        <div class="settings-inset result-summary">
+            <div class="result-item tone-success">
+                <i class="bi bi-check-circle"></i>
+                <span><small>{{ _('Completed') }}</small><strong>{{ _('{count} playlists', count=scheduled_sync.sync_succeeded_count) }}</strong></span>
+            </div>
+            <div class="result-item tone-warning">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span><small>{{ _('Partly') }}</small><strong>{{ _('{count} playlists', count=scheduled_sync.sync_partial_count) }}</strong></span>
+            </div>
+            <div class="result-item tone-danger">
+                <i class="bi bi-x-circle"></i>
+                <span><small>{{ _('Failed') }}</small><strong>{{ _('{count} playlists', count=scheduled_sync.sync_failed_count) }}</strong></span>
+            </div>
+        </div>
+        {% if scheduled_sync.sync_summary %}
+        <p class="settings-note">{{ scheduled_sync.sync_summary|tr_text }}</p>
+        {% endif %}
+        {% if scheduled_sync.sync_error %}
+        <div class="download-error">
+            <i class="bi bi-exclamation-triangle me-1"></i>{{ scheduled_sync.sync_error|tr_text }}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="settings-inset settings-empty">
+            <i class="bi bi-hourglass-split"></i>
+            <span>{{ _('No automatic sync result has been recorded yet.') }}</span>
+        </div>
+        {% endif %}
+    </article>

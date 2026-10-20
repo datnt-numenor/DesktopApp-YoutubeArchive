@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 import sys
 
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -10,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from database import Base  # noqa: E402
+import i18n  # noqa: E402
 import models  # noqa: E402,F401
 
 
@@ -26,3 +28,17 @@ async def session(tmp_path: Path) -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def isolated_language_preference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep tests off the real data/preferences.json; the UI starts in its default language."""
+    path = tmp_path / "preferences.json"
+    monkeypatch.setattr(i18n, "PREFERENCES_PATH", path)
+    monkeypatch.setattr(i18n, "_cached_language", None)
+    return path
+
+
+@pytest.fixture
+def english_ui(isolated_language_preference: Path) -> None:
+    i18n.set_language("en")
