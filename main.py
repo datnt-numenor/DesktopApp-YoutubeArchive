@@ -50,7 +50,7 @@ from downloader import (
 )
 from media_import import receive_mp3_upload
 from managed_ytdlp import ManagedYtDlpError, ensure_ytdlp_binary, get_ytdlp_status
-from models import PlaylistSource, SyncRunStatus, User
+from models import PlaylistSource, SyncEventType, SyncRunStatus, User
 from schemas import (
     BaseResponse,
     CustomPlaylistCreateRequest,
@@ -455,6 +455,14 @@ async def index(
     )
 
 
+HISTORY_DAYS_PER_PAGE = 10
+HISTORY_EVENT_LIST_LIMIT = 200
+HISTORY_EVENT_LISTS = {
+    "failed": SyncEventType.DOWNLOAD_FAILED,
+    "unavailable": SyncEventType.UNAVAILABLE,
+}
+
+
 @app.get("/history")
 async def scheduled_sync_history_page(
     request: Request,
@@ -463,6 +471,7 @@ async def scheduled_sync_history_page(
     playlist_id: str | None = None,
     result_status: str | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
+    show: str | None = None,
     session: AsyncSession = Depends(get_session),
     current_user: User | None = Depends(get_optional_user),
 ):
@@ -497,7 +506,7 @@ async def scheduled_sync_history_page(
         playlist_filter=playlist_id,
         status_filter=allowed_statuses.get(selected_status),
         page=page,
-        page_size=20,
+        page_size=HISTORY_DAYS_PER_PAGE,
     )
     query_values = {
         "date_from": selected_from.isoformat(),
@@ -505,9 +514,28 @@ async def scheduled_sync_history_page(
         "playlist_id": playlist_id or "",
         "status": selected_status,
     }
+    selected_list = show if show in HISTORY_EVENT_LISTS else ""
+    event_list = None
+    if selected_list:
+        event_list = await crud.list_scheduled_sync_events(
+            session,
+            current_user.id,
+            HISTORY_EVENT_LISTS[selected_list],
+            date_from=selected_from,
+            date_to=selected_to,
+            playlist_filter=playlist_id,
+            status_filter=allowed_statuses.get(selected_status),
+            limit=HISTORY_EVENT_LIST_LIMIT,
+        )
+    # Page and list links keep each other's state; the list link starts again from page 1.
+    list_query = {**query_values, "show": selected_list} if selected_list else query_values
 
     def page_url(target_page: int) -> str:
-        return f"/history?{urlencode({**query_values, 'page': target_page})}"
+        return f"/history?{urlencode({**list_query, 'page': target_page})}"
+
+    def list_url(name: str) -> str:
+        """Open a counter's list, or close it when it is already open."""
+        return f"/history?{urlencode(query_values if name == selected_list else {**query_values, 'show': name})}"
 
     topbar_stats = await build_topbar_stats(session, current_user)
     return render_template(
@@ -520,6 +548,11 @@ async def scheduled_sync_history_page(
             "topbar_stats": topbar_stats,
             "history": history,
             "filters": query_values,
+            "selected_list": selected_list,
+            "event_list": event_list,
+            "event_list_limit": HISTORY_EVENT_LIST_LIMIT,
+            "list_urls": {name: list_url(name) for name in HISTORY_EVENT_LISTS},
+            "close_list_url": f"/history?{urlencode(query_values)}",
             "previous_url": page_url(history["page"] - 1) if history["page"] > 1 else None,
             "next_url": page_url(history["page"] + 1) if history["page"] < history["total_pages"] else None,
         },

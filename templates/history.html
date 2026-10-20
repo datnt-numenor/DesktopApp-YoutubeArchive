@@ -8,7 +8,7 @@
 {% macro history_pagination(position) %}
 {% if history.total_pages > 1 %}
 <nav class="history-pagination history-pagination-{{ position }}" aria-label="{{ _('History pages') }}">
-    {% if previous_url %}<a class="btn btn-ghost" href="{{ previous_url }}"><i class="bi bi-chevron-left"></i>{{ _('Previous page') }}</a>{% else %}<span></span>{% endif %}
+    {% if previous_url %}<a class="btn btn-ghost page-step" href="{{ previous_url }}" rel="prev"><i class="bi bi-chevron-left"></i><span>{{ _('Previous page') }}</span></a>{% else %}<span class="btn btn-ghost page-step is-disabled" aria-disabled="true"><i class="bi bi-chevron-left"></i><span>{{ _('Previous page') }}</span></span>{% endif %}
     <div class="history-page-center">
         <span>{{ _('Page {page} / {total}', page=history.page, total=history.total_pages) }}</span>
         <form class="history-page-jump js-history-page-jump" method="get" action="/history" data-total-pages="{{ history.total_pages }}">
@@ -16,12 +16,13 @@
             <input type="hidden" name="date_to" value="{{ filters.date_to }}">
             <input type="hidden" name="playlist_id" value="{{ filters.playlist_id }}">
             <input type="hidden" name="status" value="{{ filters.status }}">
+            {% if selected_list %}<input type="hidden" name="show" value="{{ selected_list }}">{% endif %}
             <label class="visually-hidden" for="historyPage{{ position }}">{{ _('Go to page') }}</label>
             <input class="form-control history-page-input" id="historyPage{{ position }}" name="page" type="number" min="1" max="{{ history.total_pages }}" value="{{ history.page }}" inputmode="numeric" required>
             <button class="btn btn-ghost" type="submit">{{ _('Go') }}</button>
         </form>
     </div>
-    {% if next_url %}<a class="btn btn-ghost" href="{{ next_url }}">{{ _('Next page') }}<i class="bi bi-chevron-right"></i></a>{% else %}<span></span>{% endif %}
+    {% if next_url %}<a class="btn btn-ghost page-step" href="{{ next_url }}" rel="next"><span>{{ _('Next page') }}</span><i class="bi bi-chevron-right"></i></a>{% else %}<span class="btn btn-ghost page-step is-disabled" aria-disabled="true"><span>{{ _('Next page') }}</span><i class="bi bi-chevron-right"></i></span>{% endif %}
 </nav>
 {% endif %}
 {% endmacro %}
@@ -64,62 +65,107 @@
         </div>
     </form>
 
+    {% set list_titles = {'failed': _('Download errors'), 'unavailable': _('Removed or private videos')} %}
     <div class="history-summary" aria-label="{{ _('History summary') }}">
         <article class="dash-card"><span class="sync-total-icon tone-info"><i class="bi bi-arrow-repeat"></i></span><span><strong>{{ history.total_runs }}</strong><small>{{ _('Automatic syncs') }}</small></span></article>
-        <article class="dash-card"><span class="sync-total-icon tone-success"><i class="bi bi-cloud-check"></i></span><span><strong>{{ history.downloaded_count }}</strong><small>{{ _('Songs downloaded') }}</small></span></article>
-        <article class="dash-card"><span class="sync-total-icon tone-warning"><i class="bi bi-exclamation-triangle"></i></span><span><strong>{{ history.failed_count }}</strong><small>{{ _('Songs failed') }}</small></span></article>
-        <article class="dash-card"><span class="sync-total-icon tone-danger"><i class="bi bi-cloud-slash"></i></span><span><strong>{{ history.unavailable_count }}</strong><small>{{ _('Removed or private videos') }}</small></span></article>
+        <article class="dash-card"><span class="sync-total-icon tone-success"><i class="bi bi-cloud-check"></i></span><span><strong>{{ history.downloaded_count }}</strong><small>{{ _('Successful downloads') }}</small></span></article>
+        {% for name, count, icon, tone in [('failed', history.failed_count, 'bi-exclamation-triangle', 'tone-warning'), ('unavailable', history.unavailable_count, 'bi-cloud-slash', 'tone-danger')] %}
+        {% if count %}
+        <a class="dash-card history-stat-link {{ 'is-active' if selected_list == name else '' }}" href="{{ list_urls[name] }}" aria-expanded="{{ 'true' if selected_list == name else 'false' }}" title="{{ _('Show the songs') }}">
+            <span class="sync-total-icon {{ tone }}"><i class="bi {{ icon }}"></i></span>
+            <span><strong>{{ count }}</strong><small>{{ list_titles[name] }}</small></span>
+            <i class="bi bi-chevron-down history-stat-chevron" aria-hidden="true"></i>
+        </a>
+        {% else %}
+        <article class="dash-card"><span class="sync-total-icon {{ tone }}"><i class="bi {{ icon }}"></i></span><span><strong>0</strong><small>{{ list_titles[name] }}</small></span></article>
+        {% endif %}
+        {% endfor %}
     </div>
+
+    {% if selected_list %}
+    <section class="dash-card history-event-list" aria-label="{{ list_titles[selected_list] }}">
+        <div class="history-event-list-head">
+            <h3>{{ list_titles[selected_list] }} <span>{{ _('{count} errors', count=event_list.total) if selected_list == 'failed' else _('{count} videos', count=event_list.total) }}</span></h3>
+            <a class="row-icon-btn" href="{{ close_list_url }}" title="{{ _('Close') }}" aria-label="{{ _('Close') }}"><i class="bi bi-x-lg"></i></a>
+        </div>
+        {% for event in event_list.events %}
+        <div class="sync-history-event {{ 'download_failed' if selected_list == 'failed' else 'unavailable' }}">
+            <i class="bi {{ 'bi-exclamation-triangle-fill' if selected_list == 'failed' else 'bi-cloud-slash-fill' }}"></i>
+            <span>
+                <strong>{{ event.video_title }}</strong>
+                <small>{{ event.yt_video_id }} · {{ event.playlist_title }} · {{ event.date_label }} {{ event.time_label }}{% if event.message %} · {{ event.message|tr_text }}{% endif %}</small>
+            </span>
+        </div>
+        {% else %}
+        <div class="sync-history-empty">{{ _('No songs to show for these filters.') }}</div>
+        {% endfor %}
+        {% if event_list.total > event_list.events|length %}
+        <div class="sync-history-empty">{{ _('Showing the latest {shown} of {total}.', shown=event_list.events|length, total=event_list.total) }}</div>
+        {% endif %}
+    </section>
+    {% endif %}
 
     {{ history_pagination('top') }}
 
     <div class="history-groups">
         {% for group in history.groups %}
-        <section class="dash-card history-day" aria-labelledby="historyDate{{ loop.index }}">
-            <div class="history-day-heading">
-                <h3 id="historyDate{{ loop.index }}">{{ group.date_label }}</h3>
-                <span>{{ _('{count} runs on this page', count=group.runs|length) }}</span>
+        <section class="dash-card history-day" id="historyDay{{ loop.index }}">
+            <div class="history-day-head">
+                <div class="history-day-date">
+                    <h3>{{ weekday_names[group.weekday_index] }}, {{ group.date_label }}</h3>
+                    <span>{{ _('{count} syncs', count=group.run_count) }}</span>
+                </div>
+                <div class="history-day-counts">
+                    <span class="history-day-chip {{ 'tone-success' if group.downloaded_count else 'is-zero' }}"><i class="bi bi-cloud-check"></i>{{ _('{count} downloaded', count=group.downloaded_count) }}</span>
+                    <span class="history-day-chip {{ 'tone-warning' if group.failed_count else 'is-zero' }}"><i class="bi bi-exclamation-triangle"></i>{{ _('{count} errors', count=group.failed_count) }}</span>
+                    <span class="history-day-chip {{ 'tone-danger' if group.unavailable_count else 'is-zero' }}"><i class="bi bi-cloud-slash"></i>{{ _('{count} removed', count=group.unavailable_count) }}</span>
+                </div>
+                <button class="day-toggle js-history-day-toggle" type="button" aria-expanded="false" aria-controls="historyDayBody{{ loop.index }}" title="{{ _('Show the syncs of this day') }}" aria-label="{{ _('Show the syncs of this day') }}">
+                    <i class="bi bi-chevron-down"></i>
+                </button>
             </div>
-            <div class="sync-run-list">
-                {% for run in group.runs %}
-                <details class="sync-history-run">
-                    <summary>
-                        <span class="sync-run-main">
-                            <i class="bi bi-clock-history"></i>
-                            <span>
-                                <strong>{{ run.playlist_title }}</strong>
-                                <small>
-                                    {{ run.started_label }}{% if run.finished_label %}–{{ run.finished_label }}{% endif %}
-                                    {% if run.duration_seconds is not none %} · {{ run.duration_seconds|duration }}{% endif %}
-                                </small>
+            <div class="history-day-body" id="historyDayBody{{ loop.index }}" aria-hidden="true" inert>
+                <div class="sync-run-list">
+                    {% for run in group.runs %}
+                    <details class="sync-history-run">
+                        <summary>
+                            <span class="sync-run-main">
+                                <i class="bi bi-clock-history"></i>
+                                <span>
+                                    <strong>{{ run.playlist_title }}</strong>
+                                    <small>
+                                        {{ run.started_label }}{% if run.finished_label %}–{{ run.finished_label }}{% endif %}
+                                        {% if run.duration_seconds is not none %} · {{ run.duration_seconds|duration }}{% endif %}
+                                    </small>
+                                </span>
                             </span>
-                        </span>
-                        <span class="history-run-result">
-                            <span class="history-status status-{{ run.status|lower }}">{{ status_labels.get(run.status, run.status) }}</span>
-                            <span class="sync-run-counts">
-                                <span class="text-success">+{{ run.downloaded_count }}</span>
-                                {% if run.failed_count %}<span class="text-warning">{{ _('{count} errors', count=run.failed_count) }}</span>{% endif %}
-                                {% if run.unavailable_count %}<span class="text-danger">{{ _('{count} removed', count=run.unavailable_count) }}</span>{% endif %}
+                            <span class="history-run-result">
+                                <span class="history-status status-{{ run.status|lower }}">{{ status_labels.get(run.status, run.status) }}</span>
+                                <span class="sync-run-counts">
+                                    <span class="text-success">+{{ run.downloaded_count }}</span>
+                                    {% if run.failed_count %}<span class="text-warning">{{ _('{count} errors', count=run.failed_count) }}</span>{% endif %}
+                                    {% if run.unavailable_count %}<span class="text-danger">{{ _('{count} removed', count=run.unavailable_count) }}</span>{% endif %}
+                                </span>
                             </span>
-                        </span>
-                    </summary>
-                    <div class="sync-history-events">
-                        {% if run.error %}
-                        <div class="sync-history-event failed"><i class="bi bi-x-octagon"></i><span><strong>{{ _('Sync error') }}</strong><small>{{ run.error|tr_text }}</small></span></div>
-                        {% endif %}
-                        {% for event in run.events %}
-                        <div class="sync-history-event {{ event.event_type|lower }}">
-                            {% if event.event_type == 'DOWNLOADED' %}<i class="bi bi-check-circle-fill"></i>
-                            {% elif event.event_type == 'DOWNLOAD_FAILED' %}<i class="bi bi-exclamation-triangle-fill"></i>
-                            {% else %}<i class="bi bi-cloud-slash-fill"></i>{% endif %}
-                            <span><strong>{{ event.video_title }}</strong><small>{{ event.yt_video_id }}{% if event.message %} · {{ event.message|tr_text }}{% endif %}</small></span>
+                        </summary>
+                        <div class="sync-history-events">
+                            {% if run.error %}
+                            <div class="sync-history-event failed"><i class="bi bi-x-octagon"></i><span><strong>{{ _('Sync error') }}</strong><small>{{ run.error|tr_text }}</small></span></div>
+                            {% endif %}
+                            {% for event in run.events %}
+                            <div class="sync-history-event {{ event.event_type|lower }}">
+                                {% if event.event_type == 'DOWNLOADED' %}<i class="bi bi-check-circle-fill"></i>
+                                {% elif event.event_type == 'DOWNLOAD_FAILED' %}<i class="bi bi-exclamation-triangle-fill"></i>
+                                {% else %}<i class="bi bi-cloud-slash-fill"></i>{% endif %}
+                                <span><strong>{{ event.video_title }}</strong><small>{{ event.yt_video_id }}{% if event.message %} · {{ event.message|tr_text }}{% endif %}</small></span>
+                            </div>
+                            {% else %}
+                            {% if not run.error %}<div class="sync-history-empty">{{ _('No new songs in this automatic sync.') }}</div>{% endif %}
+                            {% endfor %}
                         </div>
-                        {% else %}
-                        {% if not run.error %}<div class="sync-history-empty">{{ _('No new songs in this automatic sync.') }}</div>{% endif %}
-                        {% endfor %}
-                    </div>
-                </details>
-                {% endfor %}
+                    </details>
+                    {% endfor %}
+                </div>
             </div>
         </section>
         {% else %}

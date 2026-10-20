@@ -193,3 +193,93 @@ def test_task_status_translates_stored_errors(isolated_language_preference: Path
     assert data["error"] == "Tất cả link YouTube đều tải thất bại"
     assert data["errors"][0]["message"] == "Đã hết dung lượng lưu trữ"
     assert task.error == "All YouTube imports failed"
+
+
+def _history_page(monkeypatch, query: str, failed: int = 4, unavailable: int = 1):
+    """Render /history with canned data and return the response plus the event-list call."""
+    owner = User(id="history-list-owner", email="history-list@example.com", storage_used_bytes=0, storage_quota_bytes=1024)
+    calls = []
+
+    async def fake_user():
+        return owner
+
+    async def fake_session():
+        yield None
+
+    async def fake_history(*_args, **_kwargs):
+        return {
+            "groups": [], "playlist_options": [], "total_runs": 3, "downloaded_count": 5,
+            "failed_count": failed, "unavailable_count": unavailable, "page": 1, "total_pages": 1,
+        }
+
+    async def fake_events(_session, owner_id, event_type, **kwargs):
+        calls.append((owner_id, event_type, kwargs))
+        return {
+            "events": [
+                {
+                    "yt_video_id": "abc123", "video_title": "Broken song", "message": "Storage quota reached",
+                    "playlist_title": "Night music", "date_label": "13/08/2026", "time_label": "12:00",
+                }
+            ],
+            "total": 1,
+        }
+
+    async def fake_count(*_args) -> int:
+        return 0
+
+    monkeypatch.setattr(app_module.crud, "get_scheduled_sync_history", fake_history)
+    monkeypatch.setattr(app_module.crud, "list_scheduled_sync_events", fake_events)
+    monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_count)
+    app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
+    app_module.app.dependency_overrides[app_module.get_session] = fake_session
+    try:
+        response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get(f"/history{query}")
+    finally:
+        app_module.app.dependency_overrides.clear()
+    return response, calls
+
+
+def test_history_counters_link_to_their_song_lists(monkeypatch) -> None:
+    response, calls = _history_page(monkeypatch, "")
+
+    assert calls == []
+    assert response.text.count('class="dash-card history-stat-link ') == 2
+    assert "show=failed" in response.text and "show=unavailable" in response.text
+    assert 'aria-expanded="false"' in response.text
+    assert "history-event-list" not in response.text.split("history-summary", 1)[1].split("history-groups", 1)[0]
+
+
+def test_history_failed_list_shows_songs_with_translated_messages(monkeypatch) -> None:
+    from models import SyncEventType
+
+    response, calls = _history_page(monkeypatch, "?show=failed&playlist_id=7")
+
+    assert calls[0][1] == SyncEventType.DOWNLOAD_FAILED
+    assert calls[0][2]["playlist_filter"] == "7"
+    assert 'aria-label="Lỗi tải xuống"' in response.text
+    assert "Broken song" in response.text
+    assert "Đã hết dung lượng lưu trữ" in response.text
+    # Failed downloads are counted as errors: one song can fail more than once.
+    assert "1 lỗi" in response.text.split("history-event-list-head", 1)[1].split("</h3>", 1)[0]
+    # The open counter links back to the page without the list, so clicking it again closes it.
+    active = response.text.split("history-stat-link is-active", 1)[1].split("</a>", 1)[0]
+    assert "show=" not in active.split('href="', 1)[1].split('"', 1)[0]
+
+
+def test_history_unavailable_list_and_unknown_values(monkeypatch) -> None:
+    from models import SyncEventType
+
+    response, calls = _history_page(monkeypatch, "?show=unavailable")
+    assert calls[0][1] == SyncEventType.UNAVAILABLE
+    assert 'aria-label="Video bị xoá/riêng tư"' in response.text
+    assert "1 video" in response.text.split("history-event-list-head", 1)[1].split("</h3>", 1)[0]
+
+    ignored, ignored_calls = _history_page(monkeypatch, "?show=downloaded")
+    assert ignored_calls == []
+    assert "history-event-list-head" not in ignored.text
+
+
+def test_history_counters_without_songs_are_not_links(monkeypatch) -> None:
+    response, _calls = _history_page(monkeypatch, "", failed=0, unavailable=0)
+
+    assert "history-stat-link" not in response.text.split("history-groups", 1)[0].split("history-summary", 1)[1]

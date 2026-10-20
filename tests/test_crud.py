@@ -532,12 +532,29 @@ async def test_scheduled_history_filters_source_owner_status_playlist_and_pagina
         page_size=1,
     )
 
+    # Pages hold whole days: both of today's runs share one group.
     assert history["total_runs"] == 2
     assert history["downloaded_count"] == 1
     assert history["failed_count"] == 1
-    assert history["total_pages"] == 2
-    assert sum(len(group["runs"]) for group in history["groups"]) == 1
+    assert history["total_pages"] == 1
+    assert len(history["groups"]) == 1
+    group = history["groups"][0]
+    assert (group["run_count"], group["downloaded_count"], group["failed_count"], group["unavailable_count"]) == (2, 1, 1, 0)
+    assert 0 <= group["weekday_index"] <= 6
     assert {option["label"] for option in history["playlist_options"]} == {"Scheduled One", "Scheduled Two"}
+
+    two_days = await crud.get_scheduled_sync_history(
+        session,
+        owner.id,
+        date_from=today - timedelta(days=2),
+        date_to=today,
+        page=2,
+        page_size=1,
+    )
+    assert two_days["total_days"] == 2
+    assert two_days["total_pages"] == 2
+    assert [len(group["runs"]) for group in two_days["groups"]] == [1]
+    assert two_days["groups"][0]["date_key"] == (today - timedelta(days=2)).isoformat()
 
     partial_history = await crud.get_scheduled_sync_history(
         session,
@@ -747,3 +764,58 @@ async def test_find_orphaned_media_files_keeps_every_referenced_or_in_flight_fil
     orphans = await crud.find_orphaned_media_files(session, tmp_path)
 
     assert orphans == sorted([files["unused.mp3"], files["imported/unused-import.mp3"]])
+
+
+async def test_sync_event_list_returns_only_the_requested_label_for_the_filters(session) -> None:
+    owner = User(email="event-list@example.com")
+    other = User(email="event-list-other@example.com")
+    first = Playlist(owner=owner, yt_playlist_id="events-one", title="Events One", url="https://example.com/1")
+    second = Playlist(owner=owner, yt_playlist_id="events-two", title="Events Two", url="https://example.com/2")
+    foreign = Playlist(owner=other, yt_playlist_id="events-other", title="Foreign", url="https://example.com/3")
+    videos = [Video(**sample_video(f"event-video-{index}", f"Song {index}")) for index in range(4)]
+    session.add_all([owner, other, first, second, foreign, *videos])
+    await session.commit()
+
+    run_one = await crud.create_sync_run(session, first, owner.id, "scheduled")
+    await crud.record_sync_event(session, run_one, videos[0], SyncEventType.DOWNLOAD_FAILED, "HTTP 403")
+    await crud.record_sync_event(session, run_one, videos[1], SyncEventType.UNAVAILABLE)
+    await crud.record_sync_event(session, run_one, videos[2], SyncEventType.DOWNLOADED)
+    await crud.finish_sync_run(session, run_one)
+    run_two = await crud.create_sync_run(session, second, owner.id, "scheduled")
+    await crud.record_sync_event(session, run_two, videos[3], SyncEventType.DOWNLOAD_FAILED, "Timed out")
+    await crud.finish_sync_run(session, run_two)
+    manual = await crud.create_sync_run(session, first, owner.id, "manual")
+    await crud.record_sync_event(session, manual, videos[0], SyncEventType.DOWNLOAD_FAILED, "manual run")
+    await crud.finish_sync_run(session, manual)
+    foreign_run = await crud.create_sync_run(session, foreign, other.id, "scheduled")
+    await crud.record_sync_event(session, foreign_run, videos[0], SyncEventType.DOWNLOAD_FAILED, "not mine")
+    await crud.finish_sync_run(session, foreign_run)
+
+    today = datetime.now().astimezone().date()
+    failed = await crud.list_scheduled_sync_events(
+        session, owner.id, SyncEventType.DOWNLOAD_FAILED, date_from=today, date_to=today
+    )
+    assert failed["total"] == 2
+    assert {event["video_title"] for event in failed["events"]} == {"Song 0", "Song 3"}
+    assert {event["playlist_title"] for event in failed["events"]} == {"Events One", "Events Two"}
+    assert failed["events"][0]["date_label"] == today.strftime("%d/%m/%Y")
+
+    removed = await crud.list_scheduled_sync_events(
+        session, owner.id, SyncEventType.UNAVAILABLE, date_from=today, date_to=today
+    )
+    assert [event["video_title"] for event in removed["events"]] == ["Song 1"]
+
+    one_playlist = await crud.list_scheduled_sync_events(
+        session,
+        owner.id,
+        SyncEventType.DOWNLOAD_FAILED,
+        date_from=today,
+        date_to=today,
+        playlist_filter=str(second.id),
+    )
+    assert [event["message"] for event in one_playlist["events"]] == ["Timed out"]
+
+    limited = await crud.list_scheduled_sync_events(
+        session, owner.id, SyncEventType.DOWNLOAD_FAILED, date_from=today, date_to=today, limit=1
+    )
+    assert limited["total"] == 2 and len(limited["events"]) == 1

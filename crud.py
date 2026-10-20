@@ -939,17 +939,13 @@ async def get_today_sync_history(session: AsyncSession, owner_id: str) -> dict[s
     }
 
 
-async def get_scheduled_sync_history(
-    session: AsyncSession,
+def _scheduled_history_filters(
     owner_id: str,
-    *,
     date_from: date,
     date_to: date,
-    playlist_filter: str | None = None,
-    status_filter: SyncRunStatus | None = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> dict[str, Any]:
+    playlist_filter: str | None,
+    status_filter: SyncRunStatus | None,
+) -> list[Any]:
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     utc_start = datetime.combine(date_from, time.min, tzinfo=local_tz).astimezone(timezone.utc)
     utc_end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=local_tz).astimezone(timezone.utc)
@@ -971,6 +967,63 @@ async def get_scheduled_sync_history(
             filters.append(SyncRun.playlist_id == int(playlist_filter))
     if status_filter:
         filters.append(SyncRun.status == status_filter)
+    return filters
+
+
+async def list_scheduled_sync_events(
+    session: AsyncSession,
+    owner_id: str,
+    event_type: SyncEventType,
+    *,
+    date_from: date,
+    date_to: date,
+    playlist_filter: str | None = None,
+    status_filter: SyncRunStatus | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Songs behind one history counter (failed downloads, removed videos), newest first."""
+    filters = _scheduled_history_filters(owner_id, date_from, date_to, playlist_filter, status_filter)
+    filters.append(SyncEvent.event_type == event_type)
+    total = int(
+        (await session.execute(select(func.count(SyncEvent.id)).join(SyncRun).where(*filters))).scalar_one() or 0
+    )
+    result = await session.execute(
+        select(SyncEvent, SyncRun.playlist_title, SyncRun.started_at)
+        .join(SyncRun)
+        .where(*filters)
+        .order_by(SyncRun.started_at.desc(), SyncEvent.id.desc())
+        .limit(max(1, min(limit, 500)))
+    )
+    events = []
+    for event, playlist_title, started_at in result.all():
+        local_started = _as_local_time(started_at)
+        events.append(
+            {
+                "yt_video_id": event.yt_video_id,
+                "video_title": event.video_title,
+                "message": event.message,
+                "playlist_title": playlist_title,
+                "date_label": local_started.strftime("%d/%m/%Y"),
+                "time_label": local_started.strftime("%H:%M"),
+            }
+        )
+    return {"events": events, "total": total}
+
+
+async def get_scheduled_sync_history(
+    session: AsyncSession,
+    owner_id: str,
+    *,
+    date_from: date,
+    date_to: date,
+    playlist_filter: str | None = None,
+    status_filter: SyncRunStatus | None = None,
+    page: int = 1,
+    page_size: int = 10,
+) -> dict[str, Any]:
+    """Scheduled sync history grouped by local day; pages hold `page_size` days, not runs."""
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    filters = _scheduled_history_filters(owner_id, date_from, date_to, playlist_filter, status_filter)
 
     summary_result = await session.execute(
         select(
@@ -982,17 +1035,28 @@ async def get_scheduled_sync_history(
     )
     total_runs, downloaded_count, failed_count, unavailable_count = summary_result.one()
     total_runs = int(total_runs or 0)
-    page_size = max(1, min(page_size, 100))
-    total_pages = max(1, (total_runs + page_size - 1) // page_size)
+
+    # Only ids and start times are needed to split runs into local days; events are loaded
+    # afterwards for the days on the requested page.
+    index_result = await session.execute(
+        select(SyncRun.id, SyncRun.started_at).where(*filters).order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+    )
+    run_ids_by_day: dict[str, list[int]] = {}
+    for run_id, started_at in index_result.all():
+        run_ids_by_day.setdefault(_as_local_time(started_at).date().isoformat(), []).append(run_id)
+    day_keys = list(run_ids_by_day)
+    total_days = len(day_keys)
+    page_size = max(1, min(page_size, 60))
+    total_pages = max(1, (total_days + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
+    page_day_keys = day_keys[(page - 1) * page_size : page * page_size]
+    page_run_ids = [run_id for key in page_day_keys for run_id in run_ids_by_day[key]]
 
     runs_result = await session.execute(
         select(SyncRun)
-        .where(*filters)
+        .where(SyncRun.id.in_(page_run_ids))
         .options(selectinload(SyncRun.events))
         .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
     runs = list(runs_result.scalars().unique())
 
@@ -1037,6 +1101,11 @@ async def get_scheduled_sync_history(
             group = {
                 "date_key": date_key,
                 "date_label": local_started.strftime("%d/%m/%Y"),
+                "weekday_index": local_started.weekday(),
+                "run_count": 0,
+                "downloaded_count": 0,
+                "failed_count": 0,
+                "unavailable_count": 0,
                 "runs": [],
             }
             groups_by_date[date_key] = group
@@ -1046,6 +1115,10 @@ async def get_scheduled_sync_history(
             started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at
             finished = run.finished_at.replace(tzinfo=timezone.utc) if run.finished_at.tzinfo is None else run.finished_at
             duration_seconds = max(0, round((finished - started).total_seconds()))
+        group["run_count"] += 1
+        group["downloaded_count"] += run.downloaded_count
+        group["failed_count"] += run.failed_count
+        group["unavailable_count"] += run.unavailable_count
         group["runs"].append(
             {
                 "id": run.id,
@@ -1080,6 +1153,7 @@ async def get_scheduled_sync_history(
         "playlist_options": playlist_options,
         "page": page,
         "page_size": page_size,
+        "total_days": total_days,
         "total_pages": total_pages,
     }
 

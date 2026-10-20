@@ -430,13 +430,18 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
             "failed_count": 1,
             "unavailable_count": 0,
             "page": expected_page,
-            "page_size": 20,
+            "page_size": 10,
             "total_pages": total_pages,
             "playlist_options": [{"value": "7", "label": "Night music", "is_deleted": False}],
             "groups": [
                 {
                     "date_key": "2026-08-13",
                     "date_label": "13/08/2026",
+                    "weekday_index": 3,
+                    "run_count": 1,
+                    "downloaded_count": 2,
+                    "failed_count": 1,
+                    "unavailable_count": 0,
                     "runs": [
                         {
                             "id": 1,
@@ -483,10 +488,18 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
     assert 'data-nav="history"' in response.text
     assert "Night music" in response.text
     assert "Không có bài mới trong lần tự đồng bộ này" in response.text
+    # One card per day: the counts show up front and the syncs sit in a collapsed body.
+    assert response.text.count('class="dash-card history-day"') == 1
+    assert "Thứ Năm, 13/08/2026" in response.text
+    day = response.text.split('id="historyDay1"', 1)[1].split("history-day-body", 1)[0]
+    assert "2 tải thành công" in day and "1 lỗi" in day and "0 đã xoá" in day
+    assert "bài mới" not in day
+    assert 'aria-expanded="false" aria-controls="historyDayBody1"' in response.text
+    assert 'id="historyDayBody1" aria-hidden="true" inert' in response.text
     assert captured["owner_id"] == owner.id
     assert captured["playlist_filter"] == "7"
     assert captured["status_filter"].value == "PARTIAL"
-    assert captured["page_size"] == 20
+    assert captured["page_size"] == 10
     assert captured["page"] == expected_page
     assert response.text.count('class="history-pagination history-pagination-') == expected_pagination_count
     assert response.text.count('class="history-page-jump js-history-page-jump"') == expected_pagination_count

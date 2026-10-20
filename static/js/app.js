@@ -1554,6 +1554,21 @@ document.addEventListener("click", async (event) => {
         return;
     }
 
+    const dayToggle = event.target.closest(".js-history-day-toggle");
+    if (dayToggle) {
+        const day = dayToggle.closest(".history-day");
+        const body = document.getElementById(dayToggle.getAttribute("aria-controls"));
+        if (!day || !body) return;
+
+        const expanded = dayToggle.getAttribute("aria-expanded") !== "true";
+        dayToggle.setAttribute("aria-expanded", String(expanded));
+        day.classList.toggle("is-expanded", expanded);
+        body.setAttribute("aria-hidden", String(!expanded));
+        if (expanded) body.removeAttribute("inert");
+        else body.setAttribute("inert", "");
+        return;
+    }
+
     const todaySyncToggle = event.target.closest(".js-today-sync-toggle");
     if (todaySyncToggle) {
         const panel = todaySyncToggle.closest(".today-sync-panel");
