@@ -1,90 +1,88 @@
 {% extends "base.html" %}
 
+{% block nav_section %}history{% endblock %}
+{% block page_eyebrow %}{{ _('Sync log') }}{% endblock %}
+{% block page_title %}{{ _('History') }}{% endblock %}
+{% block page_subtitle %}{{ _('Results of the automatic syncs in the last 30 days.') }}{% endblock %}
+
 {% macro history_pagination(position) %}
 {% if history.total_pages > 1 %}
-<nav class="history-pagination history-pagination-{{ position }}" aria-label="Phân trang lịch sử {{ 'phía trên' if position == 'top' else 'phía dưới' }}">
-    {% if previous_url %}<a class="btn btn-ghost" href="{{ previous_url }}"><i class="bi bi-chevron-left"></i> Trang trước</a>{% else %}<span class="history-pagination-spacer"></span>{% endif %}
+<nav class="history-pagination history-pagination-{{ position }}" aria-label="{{ _('History pages') }}">
+    {% if previous_url %}<a class="btn btn-ghost" href="{{ previous_url }}"><i class="bi bi-chevron-left"></i>{{ _('Previous page') }}</a>{% else %}<span></span>{% endif %}
     <div class="history-page-center">
-        <span>Trang {{ history.page }} / {{ history.total_pages }}</span>
+        <span>{{ _('Page {page} / {total}', page=history.page, total=history.total_pages) }}</span>
         <form class="history-page-jump js-history-page-jump" method="get" action="/history" data-total-pages="{{ history.total_pages }}">
             <input type="hidden" name="date_from" value="{{ filters.date_from }}">
             <input type="hidden" name="date_to" value="{{ filters.date_to }}">
             <input type="hidden" name="playlist_id" value="{{ filters.playlist_id }}">
             <input type="hidden" name="status" value="{{ filters.status }}">
-            <label class="visually-hidden" for="historyPage{{ position }}">Nhập số trang muốn chuyển</label>
+            <label class="visually-hidden" for="historyPage{{ position }}">{{ _('Go to page') }}</label>
             <input class="form-control history-page-input" id="historyPage{{ position }}" name="page" type="number" min="1" max="{{ history.total_pages }}" value="{{ history.page }}" inputmode="numeric" required>
-            <button class="btn btn-outline-secondary" type="submit">Đi</button>
+            <button class="btn btn-ghost" type="submit">{{ _('Go') }}</button>
         </form>
     </div>
-    {% if next_url %}<a class="btn btn-ghost" href="{{ next_url }}">Trang sau <i class="bi bi-chevron-right"></i></a>{% else %}<span class="history-pagination-spacer"></span>{% endif %}
+    {% if next_url %}<a class="btn btn-ghost" href="{{ next_url }}">{{ _('Next page') }}<i class="bi bi-chevron-right"></i></a>{% else %}<span></span>{% endif %}
 </nav>
 {% endif %}
 {% endmacro %}
 
 {% block content %}
+{% set status_labels = {'COMPLETED': _('Succeeded'), 'PARTIAL': _('Partly failed'), 'RUNNING': _('Running'), 'FAILED': _('Failed')} %}
 <section class="history-page">
-    <div class="history-heading">
-        <div>
-            <span class="eyebrow">Windows Task Scheduler</span>
-            <h2>Lịch sử tự đồng bộ</h2>
-            <p>Hiển thị các lần tự đồng bộ trong 30 ngày gần nhất.</p>
-        </div>
-    </div>
-
-    <form class="history-filters" method="get" action="/history">
+    <form class="dash-card history-filters" method="get" action="/history">
         <label>
-            <span>Từ ngày</span>
+            <span>{{ _('From') }}</span>
             <input class="form-control" type="date" name="date_from" value="{{ filters.date_from }}" max="{{ filters.date_to }}">
         </label>
         <label>
-            <span>Đến ngày</span>
+            <span>{{ _('To') }}</span>
             <input class="form-control" type="date" name="date_to" value="{{ filters.date_to }}" min="{{ filters.date_from }}">
         </label>
         <label>
-            <span>Playlist</span>
+            <span>{{ _('Playlist') }}</span>
             <select class="form-select" name="playlist_id">
-                <option value="">Tất cả playlist</option>
+                <option value="">{{ _('All playlists') }}</option>
                 {% for option in history.playlist_options %}
                 <option value="{{ option.value }}" {% if filters.playlist_id == option.value %}selected{% endif %}>
-                    {{ option.label }}{{ ' (đã xóa)' if option.is_deleted else '' }}
+                    {{ option.label }}{{ _(' (deleted)') if option.is_deleted else '' }}
                 </option>
                 {% endfor %}
             </select>
         </label>
         <label>
-            <span>Kết quả</span>
+            <span>{{ _('Result') }}</span>
             <select class="form-select" name="status">
-                <option value="">Tất cả kết quả</option>
-                <option value="COMPLETED" {% if filters.status == 'COMPLETED' %}selected{% endif %}>Thành công</option>
-                <option value="PARTIAL" {% if filters.status == 'PARTIAL' %}selected{% endif %}>Một phần lỗi</option>
-                <option value="FAILED" {% if filters.status == 'FAILED' %}selected{% endif %}>Thất bại</option>
+                <option value="">{{ _('All results') }}</option>
+                {% for value in ['COMPLETED', 'PARTIAL', 'FAILED'] %}
+                <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ status_labels[value] }}</option>
+                {% endfor %}
             </select>
         </label>
         <div class="history-filter-actions">
-            <button class="btn btn-neon" type="submit"><i class="bi bi-funnel"></i> Lọc</button>
-            <a class="btn btn-ghost" href="/history">Đặt lại</a>
+            <button class="btn btn-gradient" type="submit"><i class="bi bi-funnel"></i><span>{{ _('Filter') }}</span></button>
+            <a class="btn btn-ghost" href="/history">{{ _('Reset') }}</a>
         </div>
     </form>
 
-    <div class="history-summary" aria-label="Tổng hợp lịch sử tự đồng bộ">
-        <article><i class="bi bi-arrow-repeat"></i><span><strong>{{ history.total_runs }}</strong><small>Lần tự đồng bộ</small></span></article>
-        <article class="downloaded"><i class="bi bi-cloud-check"></i><span><strong>{{ history.downloaded_count }}</strong><small>Bài tải thành công</small></span></article>
-        <article class="failed"><i class="bi bi-exclamation-triangle"></i><span><strong>{{ history.failed_count }}</strong><small>Bài tải lỗi</small></span></article>
-        <article class="unavailable"><i class="bi bi-cloud-slash"></i><span><strong>{{ history.unavailable_count }}</strong><small>Video xóa/private</small></span></article>
+    <div class="history-summary" aria-label="{{ _('History summary') }}">
+        <article class="dash-card"><span class="sync-total-icon tone-info"><i class="bi bi-arrow-repeat"></i></span><span><strong>{{ history.total_runs }}</strong><small>{{ _('Automatic syncs') }}</small></span></article>
+        <article class="dash-card"><span class="sync-total-icon tone-success"><i class="bi bi-cloud-check"></i></span><span><strong>{{ history.downloaded_count }}</strong><small>{{ _('Songs downloaded') }}</small></span></article>
+        <article class="dash-card"><span class="sync-total-icon tone-warning"><i class="bi bi-exclamation-triangle"></i></span><span><strong>{{ history.failed_count }}</strong><small>{{ _('Songs failed') }}</small></span></article>
+        <article class="dash-card"><span class="sync-total-icon tone-danger"><i class="bi bi-cloud-slash"></i></span><span><strong>{{ history.unavailable_count }}</strong><small>{{ _('Removed or private videos') }}</small></span></article>
     </div>
 
     {{ history_pagination('top') }}
 
     <div class="history-groups">
         {% for group in history.groups %}
-        <section class="history-day" aria-labelledby="historyDate{{ loop.index }}">
+        <section class="dash-card history-day" aria-labelledby="historyDate{{ loop.index }}">
             <div class="history-day-heading">
                 <h3 id="historyDate{{ loop.index }}">{{ group.date_label }}</h3>
-                <span>{{ group.runs|length }} lần trên trang này</span>
+                <span>{{ _('{count} runs on this page', count=group.runs|length) }}</span>
             </div>
-            <div class="today-sync-runs history-run-list">
+            <div class="sync-run-list">
                 {% for run in group.runs %}
-                <details class="sync-history-run history-run status-{{ run.status|lower }}">
+                <details class="sync-history-run">
                     <summary>
                         <span class="sync-run-main">
                             <i class="bi bi-clock-history"></i>
@@ -97,29 +95,27 @@
                             </span>
                         </span>
                         <span class="history-run-result">
-                            <span class="history-status status-{{ run.status|lower }}">
-                                {% if run.status == 'COMPLETED' %}Thành công{% elif run.status == 'PARTIAL' %}Một phần lỗi{% elif run.status == 'RUNNING' %}Đang chạy{% else %}Thất bại{% endif %}
-                            </span>
+                            <span class="history-status status-{{ run.status|lower }}">{{ status_labels.get(run.status, run.status) }}</span>
                             <span class="sync-run-counts">
                                 <span class="text-success">+{{ run.downloaded_count }}</span>
-                                {% if run.failed_count %}<span class="text-warning">{{ run.failed_count }} lỗi</span>{% endif %}
-                                {% if run.unavailable_count %}<span class="text-danger">{{ run.unavailable_count }} đã xóa</span>{% endif %}
+                                {% if run.failed_count %}<span class="text-warning">{{ _('{count} errors', count=run.failed_count) }}</span>{% endif %}
+                                {% if run.unavailable_count %}<span class="text-danger">{{ _('{count} removed', count=run.unavailable_count) }}</span>{% endif %}
                             </span>
                         </span>
                     </summary>
                     <div class="sync-history-events">
                         {% if run.error %}
-                        <div class="sync-history-event failed"><i class="bi bi-x-octagon"></i><span><strong>Lỗi đồng bộ</strong><small>{{ run.error }}</small></span></div>
+                        <div class="sync-history-event failed"><i class="bi bi-x-octagon"></i><span><strong>{{ _('Sync error') }}</strong><small>{{ run.error|tr_text }}</small></span></div>
                         {% endif %}
                         {% for event in run.events %}
                         <div class="sync-history-event {{ event.event_type|lower }}">
                             {% if event.event_type == 'DOWNLOADED' %}<i class="bi bi-check-circle-fill"></i>
                             {% elif event.event_type == 'DOWNLOAD_FAILED' %}<i class="bi bi-exclamation-triangle-fill"></i>
                             {% else %}<i class="bi bi-cloud-slash-fill"></i>{% endif %}
-                            <span><strong>{{ event.video_title }}</strong><small>{{ event.yt_video_id }}{% if event.message %} · {{ event.message }}{% endif %}</small></span>
+                            <span><strong>{{ event.video_title }}</strong><small>{{ event.yt_video_id }}{% if event.message %} · {{ event.message|tr_text }}{% endif %}</small></span>
                         </div>
                         {% else %}
-                        {% if not run.error %}<div class="sync-history-empty">Không có bài mới trong lần tự đồng bộ này.</div>{% endif %}
+                        {% if not run.error %}<div class="sync-history-empty">{{ _('No new songs in this automatic sync.') }}</div>{% endif %}
                         {% endfor %}
                     </div>
                 </details>
@@ -127,10 +123,10 @@
             </div>
         </section>
         {% else %}
-        <div class="history-empty">
+        <div class="dash-card history-empty">
             <i class="bi bi-clock-history"></i>
-            <h3>Chưa có lịch sử phù hợp</h3>
-            <p>Không tìm thấy lần tự đồng bộ nào trong khoảng thời gian và bộ lọc đã chọn.</p>
+            <h3>{{ _('No matching history') }}</h3>
+            <p>{{ _('No automatic sync was found for the chosen dates and filters.') }}</p>
         </div>
         {% endfor %}
     </div>

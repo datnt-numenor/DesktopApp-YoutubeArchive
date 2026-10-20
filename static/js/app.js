@@ -1,3 +1,18 @@
+const I18N_MESSAGES = (() => {
+    try {
+        return JSON.parse(document.getElementById("i18nMessages")?.textContent || "{}");
+    } catch {
+        return {};
+    }
+})();
+const UI_LOCALE = document.documentElement.lang === "en" ? "en-GB" : "vi-VN";
+
+// English text is the key; the page embeds Vietnamese translations when that language is active.
+function t(message, values = {}) {
+    const text = I18N_MESSAGES[message] || message;
+    return text.replace(/\{(\w+)\}/g, (match, name) => (name in values ? String(values[name]) : match));
+}
+
 function showToast(message, tone = "success") {
     const area = document.getElementById("toastArea");
     if (!area) return;
@@ -8,7 +23,7 @@ function showToast(message, tone = "success") {
     toast.innerHTML = `
         <div class="d-flex">
             <div class="toast-body"></div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="${escapeHtml(t("Close"))}"></button>
         </div>
     `;
     // Messages can contain YouTube titles, ID3 tags or yt-dlp output; never parse them as HTML.
@@ -59,11 +74,11 @@ async function requestJson(url, options = {}) {
         if (!isLoggingOut) {
             window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
         }
-        throw new Error("Authentication required");
+        throw new Error(t("Authentication required"));
     }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(data.detail || data.message || `Request failed with ${response.status}`);
+        throw new Error(data.detail || data.message || t("Request failed with {status}", { status: response.status }));
     }
     return data;
 }
@@ -75,7 +90,7 @@ function formatLocalTimestamp(value) {
     if (!value) return null;
     const timestamp = new Date(value);
     if (Number.isNaN(timestamp.getTime())) return value;
-    return timestamp.toLocaleString("vi-VN", {
+    return timestamp.toLocaleString(UI_LOCALE, {
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
@@ -93,18 +108,18 @@ function renderYtDlpStatus(status) {
     const error = document.getElementById("ytDlpUpdateError");
     if (!version) return;
 
-    version.textContent = status.installed_version || "Chưa cài đặt";
+    version.textContent = status.installed_version || t("Not installed");
     previous.textContent = status.previous_version
-        ? `Phiên bản trước: ${status.previous_version}`
-        : "Chưa từng có phiên bản trước";
-    result.textContent = status.last_error ? "Kiểm tra thất bại" : "Sẵn sàng";
+        ? t("Previous version: {version}", { version: status.previous_version })
+        : t("No previous version");
+    result.textContent = status.last_error ? t("Check failed") : t("Ready");
     result.closest(".status-dot-label")?.classList.toggle("is-error", Boolean(status.last_error));
     lastCheck.textContent = status.last_successful_check_at
-        ? `Lần kiểm tra: ${formatLocalTimestamp(status.last_successful_check_at)}`
-        : "Chưa kiểm tra";
+        ? t("Last check: {time}", { time: formatLocalTimestamp(status.last_successful_check_at) })
+        : t("Not checked yet");
     lastUpdated.textContent = status.last_updated_at
-        ? `Cập nhật lần cuối: ${formatLocalTimestamp(status.last_updated_at)}`
-        : "Chưa có lần cập nhật nào.";
+        ? t("Last updated: {time}", { time: formatLocalTimestamp(status.last_updated_at) })
+        : t("No update has completed yet.");
     if (status.last_error) {
         error.querySelector("span").textContent = status.last_error;
         error.classList.remove("d-none");
@@ -122,7 +137,7 @@ async function refreshYtDlpStatus() {
         const currentVersion = status.installed_version;
         const previousSeenVersion = window.localStorage.getItem(YTDLP_VERSION_STORAGE_KEY);
         if (currentVersion && previousSeenVersion && currentVersion !== previousSeenVersion) {
-            showToast(`yt-dlp updated: ${previousSeenVersion} → ${currentVersion}`);
+            showToast(t("yt-dlp updated: {from} → {to}", { from: previousSeenVersion, to: currentVersion }));
         }
         if (currentVersion) window.localStorage.setItem(YTDLP_VERSION_STORAGE_KEY, currentVersion);
         return status;
@@ -148,7 +163,7 @@ async function uploadMp3File(playlistId, file) {
         body: file,
     }, 10 * 60 * 1000);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `Upload failed with ${response.status}`);
+    if (!response.ok) throw new Error(data.detail || t("Upload failed with {status}", { status: response.status }));
     return data;
 }
 
@@ -164,6 +179,12 @@ function navigationKey(url) {
     const normalized = new URL(url, window.location.href);
     normalized.hash = "";
     return `${normalized.pathname}${normalized.search}`;
+}
+
+// Settings queries Windows Task Scheduler through PowerShell, so it is never fetched speculatively.
+function isPrefetchableUrl(url) {
+    const nextUrl = new URL(url, window.location.href);
+    return isCacheableNavigationUrl(nextUrl) && !nextUrl.pathname.startsWith("/settings");
 }
 
 function isCacheableNavigationUrl(url) {
@@ -213,6 +234,7 @@ function storeCurrentPageSnapshot() {
         key: navigationKey(window.location.href),
         finalUrl: window.location.href,
         title: document.title,
+        headerHtml: document.getElementById("shellHeader")?.outerHTML || "",
         contentHtml: currentContent.innerHTML,
         fetchedAt: Date.now(),
     });
@@ -232,6 +254,7 @@ function buildPageSnapshot(response, html, requestedUrl) {
         key: navigationKey(finalUrl),
         finalUrl: finalUrl.href,
         title: nextDocument.title || document.title,
+        headerHtml: nextDocument.getElementById("shellHeader")?.outerHTML || "",
         contentHtml: nextContent.innerHTML,
         fetchedAt: Date.now(),
     };
@@ -290,15 +313,15 @@ function renderPageSnapshot(snapshot, options = {}) {
     if (!snapshot || !currentContent) return false;
 
     document.title = snapshot.title || document.title;
+    const currentHeader = document.getElementById("shellHeader");
+    if (currentHeader && snapshot.headerHtml) currentHeader.outerHTML = snapshot.headerHtml;
     currentContent.innerHTML = snapshot.contentHtml;
     if (push) {
         window.history.pushState({ softNavigation: true }, "", snapshot.finalUrl);
     }
-    collapseTopNav();
     syncNavigationState();
     initPlaylistTools();
     storeCurrentPageSnapshot();
-    scheduleNavigationPrefetch();
     scheduleActiveDownloadsRefresh();
     if (scrollToTop) window.scrollTo(0, 0);
     return true;
@@ -311,37 +334,12 @@ function linkFromEvent(event) {
 function prefetchNavigationUrl(url, options = {}) {
     if (!hasAuthenticatedShell() || isLoggingOut) return Promise.resolve(null);
     const nextUrl = new URL(url, window.location.href);
+    if (!isPrefetchableUrl(nextUrl)) return Promise.resolve(null);
     if (navigationKey(nextUrl) === navigationKey(window.location.href)) return Promise.resolve(null);
     return fetchPageSnapshot(nextUrl, options).catch((error) => {
         console.debug("Navigation prefetch skipped", error);
         return null;
     });
-}
-
-function scheduleNavigationPrefetch() {
-    if (!hasAuthenticatedShell() || isLoggingOut) return;
-    const run = () => {
-        if (!hasAuthenticatedShell() || isLoggingOut) return;
-        const seen = new Set();
-        const links = Array.from(document.querySelectorAll(".app-sidebar a[href], .app-topbar a[href], .public-nav a[href], #pageContent a[href]"));
-        const candidates = links
-            .map((link) => new URL(link.href, window.location.href))
-            .filter((url) => {
-                const key = navigationKey(url);
-                if (seen.has(key) || !isCacheableNavigationUrl(url) || key === navigationKey(window.location.href)) {
-                    return false;
-                }
-                seen.add(key);
-                return true;
-            })
-            .slice(0, PAGE_PREFETCH_LIMIT);
-
-        candidates.forEach((url, index) => {
-            window.setTimeout(() => prefetchNavigationUrl(url), 120 * index);
-        });
-    };
-
-    window.setTimeout(run, PAGE_PREFETCH_START_DELAY_MS);
 }
 
 function stopBackgroundNavigationWork() {
@@ -372,13 +370,15 @@ function taskCountsText(task) {
     const completed = Number(task.completed || 0);
     const failed = Number(task.failed || 0);
     const processed = completed + failed;
-    if (!total) return "Preparing";
-    return `${processed}/${total} processed | ${completed} downloaded | ${failed} failed`;
+    if (!total) return t("Preparing");
+    return t("{processed}/{total} processed | {completed} downloaded | {failed} failed", { processed, total, completed, failed });
 }
 
+const TASK_STATUS_LABELS = { queued: "queued", running: "running", done: "done", failed: "failed" };
+
 function taskStatusLabel(task) {
-    if (task.status === "done" && Number(task.failed || 0) > 0) return "done with errors";
-    return task.status;
+    if (task.status === "done" && Number(task.failed || 0) > 0) return t("done with errors");
+    return t(TASK_STATUS_LABELS[task.status] || task.status);
 }
 
 function renderActiveDownloads(tasks) {
@@ -395,25 +395,25 @@ function renderActiveDownloads(tasks) {
     panel.classList.remove("d-none");
     list.innerHTML = tasks.map((task) => {
         const progress = taskProgress(task);
-        const playlistTitle = task.playlist_title || `Playlist ${task.playlist_id || ""}`;
+        const playlistTitle = task.playlist_title || t("Playlist {id}", { id: task.playlist_id || "" });
         const current = task.current_video ? ` | ${escapeHtml(task.current_video)}` : "";
-        const tone = task.status === "failed" || Number(task.failed || 0) > 0 ? "bg-warning" : "bg-danger";
+        const tone = task.status === "failed" || Number(task.failed || 0) > 0 ? "is-warning" : "";
         const errors = Array.isArray(task.errors) ? task.errors : [];
         const visibleErrors = errors.slice(0, 5);
         const hiddenErrorCount = Math.max(0, errors.length - visibleErrors.length);
         const errorHtml = visibleErrors.length ? `
             <div class="active-download-errors">
                 <div class="active-download-errors-title">
-                    <i class="bi bi-exclamation-triangle me-1"></i>Failed videos
+                    <i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(t("Failed videos"))}
                 </div>
                 ${visibleErrors.map((item) => `
                     <div class="active-download-error-item">
-                        <strong>${escapeHtml(item.title || "Unknown video")}</strong>
+                        <strong>${escapeHtml(item.title || t("Unknown video"))}</strong>
                         <span class="text-muted">(${escapeHtml(item.yt_video_id || "")})</span>:
-                        ${escapeHtml(item.message || "Download failed")}
+                        ${escapeHtml(item.message || t("Download failed"))}
                     </div>
                 `).join("")}
-                ${hiddenErrorCount ? `<div class="active-download-error-item text-muted">+${hiddenErrorCount} more failed video(s)</div>` : ""}
+                ${hiddenErrorCount ? `<div class="active-download-error-item text-muted">${escapeHtml(t("+{count} more failed video(s)", { count: hiddenErrorCount }))}</div>` : ""}
             </div>
         ` : "";
         return `
@@ -428,11 +428,11 @@ function renderActiveDownloads(tasks) {
                             ${current}
                         </div>
                     </div>
-                    <a class="btn btn-sm btn-outline-secondary" href="/playlist/${task.playlist_id}" title="Open playlist">
+                    <a class="row-icon-btn" href="/playlist/${task.playlist_id}" title="${escapeHtml(t("Open playlist"))}">
                         <i class="bi bi-box-arrow-up-right"></i>
                     </a>
                 </div>
-                <div class="progress active-download-progress" role="progressbar" aria-label="Active download progress">
+                <div class="progress active-download-progress" role="progressbar" aria-label="${escapeHtml(t("Download progress"))}">
                     <div class="progress-bar ${tone}" style="width: ${progress}%"></div>
                 </div>
                 ${errorHtml}
@@ -470,27 +470,46 @@ function scheduleActiveDownloadsPoll(delay = 8000) {
     }, delay);
 }
 
+const POLL_TASK_MAX_FAILURES = 6;
+
+// A busy server can miss one 3 s status request; retry with backoff instead of giving up on the task.
 async function pollTask(taskId) {
-    let done = false;
-    while (!done) {
-        const task = await requestJson(`/task/${taskId}/status`, { timeoutMs: 3000 });
+    let failures = 0;
+    for (;;) {
+        let task;
+        try {
+            task = await requestJson(`/task/${taskId}/status`, { timeoutMs: 5000 });
+            failures = 0;
+        } catch (error) {
+            failures += 1;
+            if (failures >= POLL_TASK_MAX_FAILURES) {
+                showToast(t("Lost track of the task; the page will refresh."), "warning");
+                invalidatePageCache();
+                refreshCurrentPage();
+                return null;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, Math.min(15000, 1500 * 2 ** (failures - 1))));
+            continue;
+        }
+
         if (task.status === "done") {
             invalidatePageCache();
             if (Number(task.failed || 0) > 0) {
-                showToast(`Sync done: ${task.completed} downloaded, ${task.failed} failed`, "warning");
-                window.setTimeout(() => refreshCurrentPage(), 1200);
+                showToast(t("Sync done: {completed} downloaded, {failed} failed", { completed: task.completed, failed: task.failed }), "warning");
             } else {
-                showToast(task.format === "metadata" ? "Metadata imported" : "Sync completed");
-                window.setTimeout(() => refreshCurrentPage(), 700);
+                showToast(task.format === "metadata" ? t("Metadata imported") : t("Sync completed"));
             }
-            done = true;
+            window.setTimeout(() => refreshCurrentPage(), 700);
             refreshYtDlpStatus();
-        } else if (task.status === "failed") {
-            showToast(task.error || "Sync failed", "danger");
-            done = true;
-        } else {
-            await new Promise((resolve) => window.setTimeout(resolve, 1200));
+            return task;
         }
+        if (task.status === "failed") {
+            invalidatePageCache();
+            showToast(task.error || t("Sync failed"), "danger");
+            window.setTimeout(() => refreshCurrentPage(), 700);
+            return task;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }
 }
 
@@ -503,6 +522,7 @@ const playbackState = {
     shouldResume: false,
     recoveryAttempts: 0,
     recoveryTimer: null,
+    isSeeking: false,
 };
 
 const MAX_PLAYBACK_RECOVERY_ATTEMPTS = 4;
@@ -530,6 +550,28 @@ function normalizeSearch(value) {
     return String(value || "").trim().toLocaleLowerCase();
 }
 
+let playlistSearchIndex = null;
+let playlistSearchIndexRequest = null;
+
+function loadPlaylistSearchIndex() {
+    if (playlistSearchIndex) return Promise.resolve(playlistSearchIndex);
+    if (!playlistSearchIndexRequest) {
+        playlistSearchIndexRequest = requestJson("/api/playlists/search-index", { timeoutMs: 15000 })
+            .then((index) => {
+                playlistSearchIndex = index;
+                return index;
+            })
+            .catch((error) => {
+                console.warn("Unable to load the song search index", error);
+                return {};
+            })
+            .finally(() => {
+                playlistSearchIndexRequest = null;
+            });
+    }
+    return playlistSearchIndexRequest;
+}
+
 function updatePlaylistSearch() {
     const input = document.getElementById("playlistSearch");
     const cards = Array.from(document.querySelectorAll(".js-playlist-card"));
@@ -538,26 +580,29 @@ function updatePlaylistSearch() {
     if (!input && !cards.length) return;
 
     const query = normalizeSearch(input?.value || "");
+    if (query && !playlistSearchIndex) {
+        // Match playlist names now and song names once the index arrives.
+        loadPlaylistSearchIndex().then(() => {
+            if (document.getElementById("playlistSearch") === input) updatePlaylistSearch();
+        });
+    }
     let visibleCount = 0;
 
     cards.forEach((card) => {
-        const playlistText = [
-            card.dataset.title,
-            card.dataset.url,
-        ].join(" ");
-        const songMatches = Array.from(card.querySelectorAll(".dashboard-song-index span")).filter((song) => {
-            const songText = [song.dataset.title, song.dataset.channel, song.dataset.sourceId].join(" ");
-            return query && normalizeSearch(songText).includes(query);
-        });
+        const playlistText = [card.dataset.title, card.dataset.url].join(" ");
+        const songs = query && playlistSearchIndex ? playlistSearchIndex[card.dataset.playlistId] || [] : [];
+        const songMatches = songs.filter((song) => (
+            normalizeSearch([song.title, song.channel_name, song.source_id].join(" ")).includes(query)
+        ));
         const playlistMatches = !query || normalizeSearch(playlistText).includes(query);
         const matches = playlistMatches || songMatches.length > 0;
         card.classList.toggle("d-none", !matches);
         const matchBox = card.querySelector(".dashboard-song-matches");
         if (matchBox) {
             if (query && songMatches.length) {
-                const names = songMatches.slice(0, 3).map((song) => song.textContent.trim());
+                const names = songMatches.slice(0, 3).map((song) => song.title);
                 const remaining = songMatches.length - names.length;
-                matchBox.textContent = `Khớp bài: ${names.join(", ")}${remaining ? ` (+${remaining})` : ""}`;
+                matchBox.textContent = t("Matching songs: {names}", { names: names.join(", ") }) + (remaining ? ` (+${remaining})` : "");
                 matchBox.classList.remove("d-none");
             } else {
                 matchBox.textContent = "";
@@ -568,7 +613,9 @@ function updatePlaylistSearch() {
     });
 
     if (count) {
-        count.textContent = query ? `${visibleCount}/${cards.length} playlist` : `${cards.length} playlist`;
+        count.textContent = query
+            ? t("{visible}/{total} playlists", { visible: visibleCount, total: cards.length })
+            : t("{count} playlists", { count: cards.length });
     }
     if (empty) empty.classList.toggle("d-none", !query || visibleCount > 0);
 }
@@ -606,7 +653,7 @@ function updateAutoSyncToggle(input) {
     const toggle = input.closest(".auto-sync-toggle");
     const label = toggle?.querySelector(".js-auto-sync-label");
     if (toggle) toggle.classList.toggle("is-enabled", input.checked);
-    if (label) label.textContent = input.checked ? "Tự đồng bộ: bật" : "Tự đồng bộ: tắt";
+    if (label) label.textContent = input.checked ? t("Auto-sync: on") : t("Auto-sync: off");
 }
 
 function syncAutoSyncToggleLabels() {
@@ -634,7 +681,7 @@ function updateVideoSearch() {
         if (matches) visibleCount += 1;
     });
 
-    if (count) count.textContent = `${visibleCount}/${rows.length} videos shown`;
+    if (count) count.textContent = query ? t("{visible}/{total} videos", { visible: visibleCount, total: rows.length }) : t("{count} videos", { count: rows.length });
     if (empty) empty.classList.toggle("d-none", visibleCount > 0);
     syncVisiblePlaybackState();
 }
@@ -644,7 +691,7 @@ function refreshPlaybackTracks() {
         id: button.dataset.videoId || button.dataset.streamUrl,
         button,
         row: button.closest(".js-video-row"),
-        title: button.dataset.title || "Untitled track",
+        title: button.dataset.title || t("Untitled track"),
         url: button.dataset.streamUrl,
     })).filter((track) => track.url);
     syncVisiblePlaybackState();
@@ -658,7 +705,7 @@ function visiblePlaybackTracks() {
 function toPlayableTrack(track) {
     return {
         id: track.id || track.url,
-        title: track.title || "Untitled track",
+        title: track.title || t("Untitled track"),
         url: track.url,
     };
 }
@@ -690,6 +737,7 @@ function getPlayerElements() {
         mute: document.getElementById("globalPlayerMute"),
         shuffle: document.getElementById("globalPlayerShuffle"),
         repeat: document.getElementById("globalPlayerRepeat"),
+        autoNext: document.getElementById("globalPlayerAutoNext"),
     };
 }
 
@@ -712,7 +760,7 @@ function setRangeProgress(input, value, max) {
 }
 
 function updateGlobalPlayerControls() {
-    const { media, playPause, seek, currentTime, duration, volume, mute, shuffle, repeat } = getPlayerElements();
+    const { media, playPause, seek, currentTime, duration, volume, mute, shuffle, repeat, autoNext } = getPlayerElements();
     if (!media) return;
 
     if (playPause) {
@@ -721,7 +769,8 @@ function updateGlobalPlayerControls() {
     }
 
     const mediaDuration = Number.isFinite(media.duration) ? media.duration : 0;
-    if (seek) {
+    // While the user drags, timeupdate must not pull the thumb back to the playing position.
+    if (seek && !playbackState.isSeeking) {
         const seekValue = mediaDuration ? Math.round((media.currentTime / mediaDuration) * 1000) : 0;
         seek.value = String(seekValue);
         setRangeProgress(seek, seekValue, 1000);
@@ -740,6 +789,8 @@ function updateGlobalPlayerControls() {
     }
     if (shuffle) shuffle.classList.toggle("is-active", Boolean(playbackSettings.shuffle));
     if (repeat) repeat.classList.toggle("is-active", Boolean(playbackSettings.repeat));
+    if (autoNext) autoNext.classList.toggle("is-active", Boolean(playbackSettings.autoNext));
+    [shuffle, repeat, autoNext].forEach((button) => button?.setAttribute("aria-pressed", String(button.classList.contains("is-active"))));
 }
 
 function showGlobalPlayer() {
@@ -770,12 +821,12 @@ function playbackRetryUrl(url) {
 function schedulePlaybackRecovery() {
     if (!playbackState.currentTrack || !playbackState.shouldResume || playbackState.recoveryTimer) return;
     if (playbackState.recoveryAttempts >= MAX_PLAYBACK_RECOVERY_ATTEMPTS) {
-        showToast("Local media server is unavailable. Please restart the app if playback does not recover.", "danger");
+        showToast(t("Local media server is unavailable. Please restart the app if playback does not recover."), "danger");
         return;
     }
 
     if (playbackState.recoveryAttempts === 0) {
-        showToast("Local media connection was interrupted. Reconnecting...", "warning");
+        showToast(t("Local media connection was interrupted. Reconnecting..."), "warning");
     }
     const delay = 1200 * (playbackState.recoveryAttempts + 1);
     playbackState.recoveryTimer = window.setTimeout(() => {
@@ -806,7 +857,7 @@ async function recoverCurrentPlayback() {
     } catch (error) {
         console.warn("Media playback recovery failed", error);
         if (isAutoplayPolicyError(error)) {
-            showToast("Press play in the media bar to resume playback", "warning");
+            showToast(t("Press play in the media bar to resume playback"), "warning");
         } else {
             schedulePlaybackRecovery();
         }
@@ -820,7 +871,7 @@ function stopPlayback() {
         media.removeAttribute("src");
         media.load();
     }
-    if (title) title.textContent = "No track selected";
+    if (title) title.textContent = t("No track selected");
     if (seek) {
         seek.value = "0";
         setRangeProgress(seek, 0, 1000);
@@ -848,10 +899,9 @@ function applyPlaybackSettingsToMedia() {
 function syncVisiblePlaybackState() {
     playbackState.pageTracks.forEach((item) => {
         const active = sameTrack(item, playbackState.currentTrack);
-        item.row?.classList.toggle("table-active", active);
-        item.button.classList.toggle("btn-danger", active);
-        item.button.classList.toggle("btn-outline-secondary", !active);
-        item.button.innerHTML = active ? '<i class="bi bi-volume-up"></i>' : '<i class="bi bi-play-circle"></i>';
+        item.row?.classList.toggle("is-playing", active);
+        item.button.classList.toggle("is-playing", active);
+        item.button.innerHTML = active ? '<i class="bi bi-volume-up"></i>' : '<i class="bi bi-play-fill"></i>';
     });
 }
 
@@ -902,7 +952,7 @@ async function playTrack(track, options = {}) {
     } catch (error) {
         console.warn("Media playback failed", error);
         if (isAutoplayPolicyError(error)) {
-            showToast("Press play in the media bar to start playback", "warning");
+            showToast(t("Press play in the media bar to start playback"), "warning");
         } else {
             schedulePlaybackRecovery();
         }
@@ -942,25 +992,6 @@ async function handleTrackEnded() {
     } else {
         playbackState.shouldResume = false;
     }
-}
-
-function bindPlaybackOptions() {
-    const options = [
-        ["playbackRepeat", "repeat"],
-        ["playbackAutoNext", "autoNext"],
-        ["playbackShuffle", "shuffle"],
-    ];
-    options.forEach(([elementId, settingKey]) => {
-        const input = document.getElementById(elementId);
-        if (!input) return;
-        input.checked = Boolean(playbackSettings[settingKey]);
-        input.addEventListener("change", () => {
-            playbackSettings[settingKey] = input.checked;
-            savePlaybackSettings();
-            applyPlaybackSettingsToMedia();
-            updateGlobalPlayerControls();
-        });
-    });
 }
 
 let globalPlayerInitialized = false;
@@ -1012,7 +1043,7 @@ function initGlobalPlayer() {
             } catch (error) {
                 console.warn("Media playback failed", error);
                 if (isAutoplayPolicyError(error)) {
-                    showToast("Playback was blocked. Press play again to resume.", "warning");
+                    showToast(t("Playback was blocked. Press play again to resume."), "warning");
                 } else {
                     schedulePlaybackRecovery();
                 }
@@ -1025,9 +1056,23 @@ function initGlobalPlayer() {
         updateGlobalPlayerControls();
     });
 
+    seek?.addEventListener("pointerdown", () => {
+        playbackState.isSeeking = true;
+    });
     seek?.addEventListener("input", () => {
-        if (!media || !Number.isFinite(media.duration) || !media.duration) return;
-        media.currentTime = (Number(seek.value) / 1000) * media.duration;
+        playbackState.isSeeking = true;
+        setRangeProgress(seek, Number(seek.value), 1000);
+        if (media && Number.isFinite(media.duration) && media.duration) {
+            const currentTime = document.getElementById("globalPlayerCurrentTime");
+            if (currentTime) currentTime.textContent = formatPlaybackTime((Number(seek.value) / 1000) * media.duration);
+        }
+    });
+    // Seek once on release; seeking on every input event made the audio stutter while dragging.
+    seek?.addEventListener("change", () => {
+        if (media && Number.isFinite(media.duration) && media.duration) {
+            media.currentTime = (Number(seek.value) / 1000) * media.duration;
+        }
+        playbackState.isSeeking = false;
         updateGlobalPlayerControls();
     });
 
@@ -1056,6 +1101,12 @@ function initGlobalPlayer() {
         applyPlaybackSettingsToMedia();
     });
 
+    document.getElementById("globalPlayerAutoNext")?.addEventListener("click", () => {
+        playbackSettings.autoNext = !playbackSettings.autoNext;
+        savePlaybackSettings();
+        updateGlobalPlayerControls();
+    });
+
     updateGlobalPlayerControls();
 }
 
@@ -1080,7 +1131,6 @@ function initPlaylistTools() {
         });
     }
 
-    bindPlaybackOptions();
     syncAutoSyncToggleLabels();
     refreshPlaybackTracks();
     updateVideoSearch();
@@ -1104,56 +1154,11 @@ function shouldHandleSoftNavigation(event, link) {
     return true;
 }
 
-function collapseTopNav() {
-    const nav = document.getElementById("topNav");
-    if (!nav?.classList.contains("show") || !window.bootstrap) return;
-    bootstrap.Collapse.getOrCreateInstance(nav, { toggle: false }).hide();
-}
-
-function sectionForPath(pathname) {
-    if (pathname.startsWith("/history")) {
-        return {
-            nav: "history",
-            eyebrow: "Nhật ký đồng bộ",
-            label: "Lịch sử",
-            subtitle: "Theo dõi kết quả các lần đồng bộ tự động trong 30 ngày gần nhất.",
-        };
-    }
-    if (pathname.startsWith("/settings")) {
-        return {
-            nav: "settings",
-            eyebrow: "Cài đặt hệ thống",
-            label: "Cài đặt",
-            subtitle: "Quản lý lịch trình đồng bộ và các tuỳ chọn lưu trữ, cập nhật ứng dụng.",
-        };
-    }
-    if (pathname.startsWith("/playlist/")) {
-        return {
-            nav: "dashboard",
-            eyebrow: "Thư viện",
-            label: "Chi tiết playlist",
-            subtitle: "Nghe, tìm kiếm và quản lý các bài hát trong playlist.",
-        };
-    }
-    return {
-        nav: "dashboard",
-        eyebrow: "Kho lưu trữ YouTube của bạn",
-        label: "Bảng điều khiển",
-        subtitle: "Quản lý, đồng bộ và lưu trữ các playlist yêu thích từ YouTube.",
-    };
-}
-
 function syncNavigationState() {
-    const section = sectionForPath(window.location.pathname);
+    const section = document.getElementById("shellHeader")?.dataset.navSection || "dashboard";
     document.querySelectorAll(".sidebar-link[data-nav]").forEach((link) => {
-        link.classList.toggle("active", link.dataset.nav === section.nav);
+        link.classList.toggle("active", link.dataset.nav === section);
     });
-    const label = document.getElementById("currentSectionLabel");
-    if (label) label.textContent = section.label;
-    const eyebrow = document.getElementById("currentSectionEyebrow");
-    if (eyebrow) eyebrow.textContent = section.eyebrow;
-    const subtitle = document.getElementById("currentSectionSubtitle");
-    if (subtitle) subtitle.textContent = section.subtitle;
 }
 
 async function navigateTo(url, options = {}) {
@@ -1162,7 +1167,16 @@ async function navigateTo(url, options = {}) {
 
     const cached = useCache ? cachedPage(nextUrl) : null;
     if (cached && renderPageSnapshot(cached, { push, scrollToTop })) {
-        prefetchNavigationUrl(nextUrl, { force: true });
+        // Show the cached page at once, then quietly swap in fresh data.
+        if (isPrefetchableUrl(nextUrl)) {
+            fetchPageSnapshot(nextUrl, { force: true })
+                .then((fresh) => {
+                    if (fresh && navigationKey(window.location.href) === fresh.key) {
+                        renderPageSnapshot(fresh, { push: false, scrollToTop: false });
+                    }
+                })
+                .catch((error) => console.debug("Background refresh skipped", error));
+        }
         return;
     }
 
@@ -1215,7 +1229,7 @@ document.addEventListener("submit", async (event) => {
         const originalButtonHtml = button?.innerHTML;
         if (button) {
             button.disabled = true;
-            button.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Adding...';
+            button.innerHTML = `<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>${escapeHtml(t("Adding..."))}`;
         }
         try {
             const data = await requestJson("/playlist/add", {
@@ -1223,7 +1237,7 @@ document.addEventListener("submit", async (event) => {
                 body: JSON.stringify({ url: input.value }),
             });
             invalidatePageCache();
-            showToast(data.message || "Playlist added");
+            showToast(data.message || t("Playlist added"));
             await refreshActiveDownloads();
             await navigateTo(`/playlist/${data.playlist_id}`, { useCache: false });
             if (data.task_id) {
@@ -1251,7 +1265,7 @@ document.addEventListener("submit", async (event) => {
                 body: JSON.stringify({ title: input?.value || "" }),
             });
             invalidatePageCache();
-            showToast(data.message || "Đã tạo playlist");
+            showToast(data.message || t("Playlist created"));
             await navigateTo(`/playlist/${data.playlist_id}`, { useCache: false });
         } catch (error) {
             showToast(error.message, "danger");
@@ -1265,7 +1279,7 @@ document.addEventListener("submit", async (event) => {
         const form = event.target;
         const videoIds = Array.from(form.querySelectorAll('input[name="video_ids"]:checked')).map((input) => Number(input.value));
         if (!videoIds.length) {
-            showToast("Hãy chọn ít nhất một bài đã tải", "warning");
+            showToast(t("Select at least one downloaded song"), "warning");
             return;
         }
         const button = form.querySelector('button[type="submit"]');
@@ -1276,7 +1290,7 @@ document.addEventListener("submit", async (event) => {
                 body: JSON.stringify({ video_ids: videoIds }),
             });
             invalidatePageCache();
-            showToast(data.message || "Đã thêm bài hát");
+            showToast(data.message || t("Songs added"));
             await refreshCurrentPage();
         } catch (error) {
             showToast(error.message, "danger");
@@ -1292,7 +1306,7 @@ document.addEventListener("submit", async (event) => {
             .map((url) => url.trim())
             .filter(Boolean);
         if (!urls.length || urls.length > 50) {
-            showToast("Nhập từ 1 đến 50 link YouTube, mỗi dòng một link", "warning");
+            showToast(t("Enter 1 to 50 YouTube links, one per line"), "warning");
             return;
         }
         const button = form.querySelector('button[type="submit"]');
@@ -1304,7 +1318,7 @@ document.addEventListener("submit", async (event) => {
             });
             form.reset();
             invalidatePageCache();
-            showToast(data.message || "Đã xếp hàng tải MP3");
+            showToast(data.message || t("MP3 download queued"));
             await refreshActiveDownloads();
             pollTask(data.task_id).catch((error) => showToast(error.message, "danger"));
         } catch (error) {
@@ -1328,7 +1342,7 @@ document.addEventListener("submit", async (event) => {
                 timeoutMs: 45000,
             });
             invalidatePageCache();
-            showToast(data.message || "Settings saved");
+            showToast(data.message || t("Settings saved"));
             await refreshCurrentPage();
         } catch (error) {
             showToast(error.message, "danger");
@@ -1346,7 +1360,7 @@ document.addEventListener("submit", async (event) => {
         const button = form.querySelector('button[type="submit"]');
 
         if (newPassword !== confirmation) {
-            showToast("New password confirmation does not match", "danger");
+            showToast(t("The new password confirmation does not match"), "danger");
             return;
         }
 
@@ -1360,7 +1374,7 @@ document.addEventListener("submit", async (event) => {
                 }),
             });
             form.reset();
-            showToast(data.message || "Password changed successfully");
+            showToast(data.message || t("Password changed successfully"));
         } catch (error) {
             showToast(error.message, "danger");
         } finally {
@@ -1382,7 +1396,7 @@ document.addEventListener("change", async (event) => {
             body: JSON.stringify({ auto_sync: nextValue }),
         });
         invalidatePageCache();
-        showToast(data.message || (nextValue ? "Auto-sync enabled" : "Auto-sync disabled"));
+        showToast(data.message || (nextValue ? t("Auto-sync enabled") : t("Auto-sync disabled")));
     } catch (error) {
         autoSyncInput.checked = !nextValue;
         updateAutoSyncToggle(autoSyncInput);
@@ -1417,12 +1431,12 @@ function renderOrphanedMedia(result) {
     panel.classList.remove("d-none");
     list.replaceChildren();
     if (!result.count) {
-        summary.textContent = "Không tìm thấy file MP3 nào không dùng đến.";
+        summary.textContent = t("No unused MP3 files found.");
         deleteButton.classList.add("d-none");
         return;
     }
 
-    summary.textContent = `${result.count} file MP3 không dùng đến, tổng ${formatFileSize(result.total_bytes)}.`;
+    summary.textContent = t("{count} unused MP3 file(s), {size} in total.", { count: result.count, size: formatFileSize(result.total_bytes) });
     result.files.slice(0, ORPHAN_PREVIEW_LIMIT).forEach((file) => {
         const item = document.createElement("li");
         item.textContent = `${file.name} (${formatFileSize(file.size_bytes)})`;
@@ -1430,10 +1444,10 @@ function renderOrphanedMedia(result) {
     });
     if (result.count > ORPHAN_PREVIEW_LIMIT) {
         const more = document.createElement("li");
-        more.textContent = `+${result.count - ORPHAN_PREVIEW_LIMIT} file khác`;
+        more.textContent = t("+{count} more file(s)", { count: result.count - ORPHAN_PREVIEW_LIMIT });
         list.appendChild(more);
     }
-    deleteButton.querySelector("span").textContent = `Xoá ${result.count} file`;
+    deleteButton.querySelector("span").textContent = t("Delete {count} file(s)", { count: result.count });
     deleteButton.classList.remove("d-none");
 }
 
@@ -1451,7 +1465,7 @@ async function findOrphanedMedia(button) {
 async function deleteOrphanedMedia(button) {
     if (!orphanedMediaFiles.length) return;
     const confirmed = window.confirm(
-        `Xoá vĩnh viễn ${orphanedMediaFiles.length} file MP3 không dùng đến? Thao tác này không thể hoàn tác.`,
+        t("Permanently delete {count} unused MP3 file(s)? This cannot be undone.", { count: orphanedMediaFiles.length }),
     );
     if (!confirmed) return;
 
@@ -1464,7 +1478,7 @@ async function deleteOrphanedMedia(button) {
         });
         orphanedMediaFiles = [];
         invalidatePageCache();
-        showToast(data.message || "Unused files deleted");
+        showToast(data.message || t("Unused files deleted"));
         await refreshCurrentPage();
     } catch (error) {
         showToast(error.message, "danger");
@@ -1506,7 +1520,7 @@ document.addEventListener("click", async (event) => {
             const status = await requestJson("/api/yt-dlp/check", { method: "POST", timeoutMs: 120000 });
             renderYtDlpStatus(status);
             invalidatePageCache();
-            showToast(status.last_error ? "Kiểm tra cập nhật thất bại" : "yt-dlp đang ở phiên bản mới nhất", status.last_error ? "danger" : "success");
+            showToast(status.last_error ? t("Update check failed") : t("yt-dlp is up to date"), status.last_error ? "danger" : "success");
         } catch (error) {
             showToast(error.message, "danger");
         } finally {
@@ -1555,7 +1569,7 @@ document.addEventListener("click", async (event) => {
         const status = document.getElementById("customMp3UploadStatus");
         const files = Array.from(input?.files || []);
         if (!files.length) {
-            showToast("Hãy chọn ít nhất một file MP3", "warning");
+            showToast(t("Select at least one MP3 file"), "warning");
             return;
         }
 
@@ -1563,7 +1577,7 @@ document.addEventListener("click", async (event) => {
         let completed = 0;
         const failures = [];
         for (const [index, file] of files.entries()) {
-            if (status) status.textContent = `Đang nhập ${index + 1}/${files.length}: ${file.name}`;
+            if (status) status.textContent = t("Importing {current}/{total}: {name}", { current: index + 1, total: files.length, name: file.name });
             try {
                 await uploadMp3File(uploadButton.dataset.playlistId, file);
                 completed += 1;
@@ -1574,19 +1588,19 @@ document.addEventListener("click", async (event) => {
 
         invalidatePageCache();
         if (failures.length) {
-            showToast(`Đã nhập ${completed}/${files.length} file. ${failures[0]}`, completed ? "warning" : "danger");
+            showToast(t("Imported {completed}/{total} file(s). {error}", { completed, total: files.length, error: failures[0] }), completed ? "warning" : "danger");
         } else {
-            showToast(`Đã nhập ${completed} file MP3`);
+            showToast(t("Imported {count} MP3 file(s)", { count: completed }));
         }
-        if (status) status.textContent = failures.length ? `Hoàn tất với ${failures.length} lỗi` : "Hoàn tất";
+        if (status) status.textContent = failures.length ? t("Finished with {count} error(s)", { count: failures.length }) : t("Finished");
         await refreshCurrentPage();
         return;
     }
 
     const hideVideoButton = event.target.closest(".js-hide-video");
     if (hideVideoButton) {
-        const title = hideVideoButton.dataset.title || "bài hát này";
-        if (!window.confirm(`Ẩn “${title}” khỏi playlist? Dữ liệu vẫn được giữ lại.`)) return;
+        const title = hideVideoButton.dataset.title || t("this song");
+        if (!window.confirm(t("Hide “{title}” from the playlist? Its data is kept.", { title }))) return;
 
         hideVideoButton.disabled = true;
         try {
@@ -1595,7 +1609,7 @@ document.addEventListener("click", async (event) => {
                 { method: "DELETE" },
             );
             invalidatePageCache();
-            showToast(data.message || "Đã ẩn bài hát");
+            showToast(data.message || t("Song hidden"));
             await refreshCurrentPage();
         } catch (error) {
             showToast(error.message, "danger");
@@ -1623,7 +1637,7 @@ document.addEventListener("click", async (event) => {
                 { method: "POST" },
             );
             invalidatePageCache();
-            showToast(data.message || "Đã khôi phục bài hát");
+            showToast(data.message || t("Song restored"));
             await refreshCurrentPage();
         } catch (error) {
             showToast(error.message, "danger");
@@ -1634,6 +1648,7 @@ document.addEventListener("click", async (event) => {
 
     const syncButton = event.target.closest(".js-sync");
     if (syncButton) {
+        if (syncButton.disabled) return;
         syncButton.disabled = true;
         try {
             const data = await requestJson(`/playlist/${syncButton.dataset.playlistId}/sync`, {
@@ -1641,14 +1656,15 @@ document.addEventListener("click", async (event) => {
                 body: JSON.stringify({ format: syncButton.dataset.format || "mp3" }),
             });
             invalidatePageCache();
-            showToast("Sync queued");
+            showToast(t("Sync queued"));
             await refreshActiveDownloads();
-            pollTask(data.task_id).catch((error) => showToast(error.message, "danger"));
+            await pollTask(data.task_id);
         } catch (error) {
             showToast(error.message, "danger");
         } finally {
             syncButton.disabled = false;
         }
+        return;
     }
 
     const playButton = event.target.closest(".js-play-media");
@@ -1661,11 +1677,11 @@ document.addEventListener("click", async (event) => {
 
     const deleteButton = event.target.closest(".js-delete");
     if (deleteButton) {
-        if (!window.confirm("Xoá playlist này khỏi kho lưu trữ? Các file MP3 vẫn được giữ lại.")) return;
+        if (!window.confirm(t("Delete this playlist from the archive? Its MP3 files are kept."))) return;
         try {
             const data = await requestJson(`/playlist/${deleteButton.dataset.playlistId}`, { method: "DELETE" });
             invalidatePageCache();
-            showToast(data.message || "Playlist deleted");
+            showToast(data.message || t("Playlist deleted"));
             window.setTimeout(() => refreshCurrentPage(), 700);
         } catch (error) {
             showToast(error.message, "danger");
@@ -1689,7 +1705,7 @@ document.addEventListener("click", async (event) => {
     document.addEventListener(eventName, (event) => {
         if (!hasAuthenticatedShell() || isLoggingOut) return;
         const link = linkFromEvent(event);
-        if (!link || !isCacheableNavigationUrl(link.href)) return;
+        if (!link || !isPrefetchableUrl(link.href)) return;
         prefetchNavigationUrl(link.href);
     }, { passive: true });
 });
@@ -1707,7 +1723,6 @@ document.addEventListener("DOMContentLoaded", () => {
     initGlobalPlayer();
     initPlaylistTools();
     storeCurrentPageSnapshot();
-    scheduleNavigationPrefetch();
     scheduleActiveDownloadsRefresh(1000);
     scheduleActiveDownloadsPoll(2500);
     refreshYtDlpStatus();

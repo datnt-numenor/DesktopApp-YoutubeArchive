@@ -147,7 +147,6 @@ class PlaylistSchema(BaseModel):
     archive_percent: int = 0
     thumbnail_url: str | None = None
     source_type: str = "YOUTUBE"
-    search_videos: list[PlaylistSearchVideoSchema] = Field(default_factory=list)
 
 
 class PlaylistDetailResponse(BaseModel):

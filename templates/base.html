@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi">
+<html lang="{{ lang }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,10 +14,22 @@
 </head>
 <body class="app-body {% if user %}app-body-auth{% else %}app-body-public{% endif %}">
     <div class="ambient-bg" aria-hidden="true"></div>
+    <script id="i18nMessages" type="application/json">{{ js_messages|tojson }}</script>
+
+    {% macro language_switch() %}
+    <form class="language-switch" method="post" action="/language" aria-label="{{ _('Language') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ request.url.path }}{{ '?' ~ request.url.query if request.url.query else '' }}">
+        <button class="{{ 'is-active' if lang == 'vi' else '' }}" type="submit" name="language" value="vi" aria-pressed="{{ 'true' if lang == 'vi' else 'false' }}" title="Tiếng Việt">VI</button>
+        <button class="{{ 'is-active' if lang == 'en' else '' }}" type="submit" name="language" value="en" aria-pressed="{{ 'true' if lang == 'en' else 'false' }}" title="English">EN</button>
+    </form>
+    {% endmacro %}
+
+    {% set nav_section = self.nav_section()|trim %}
 
     {% if user %}
     <div class="app-layout">
-        <aside class="app-sidebar" aria-label="Primary navigation">
+        <aside class="app-sidebar" aria-label="{{ _('Primary navigation') }}">
             <a class="sidebar-brand" href="/">
                 <span class="brand-mark">
                     <img class="app-logo" src="{{ url_for('static', path='img/logo.svg') }}?v={{ asset_version }}" alt="" aria-hidden="true">
@@ -29,103 +41,98 @@
             </a>
 
             <nav class="sidebar-nav">
-                <a class="sidebar-link" data-nav="dashboard" href="/">
+                <a class="sidebar-link {{ 'active' if nav_section == 'dashboard' else '' }}" data-nav="dashboard" href="/">
                     <i class="bi bi-house"></i>
-                    <span>Bảng điều khiển</span>
+                    <span>{{ _('Dashboard') }}</span>
                 </a>
-                <a class="sidebar-link" data-nav="history" href="/history">
+                <a class="sidebar-link {{ 'active' if nav_section == 'history' else '' }}" data-nav="history" href="/history">
                     <i class="bi bi-clock"></i>
-                    <span>Lịch sử</span>
+                    <span>{{ _('History') }}</span>
                 </a>
-                <a class="sidebar-link" data-nav="settings" href="/settings">
+                <a class="sidebar-link {{ 'active' if nav_section == 'settings' else '' }}" data-nav="settings" href="/settings">
                     <i class="bi bi-gear"></i>
-                    <span>Cài đặt</span>
+                    <span>{{ _('Settings') }}</span>
                 </a>
             </nav>
 
             <div class="sidebar-footer">
+                {{ language_switch() }}
                 <div class="sidebar-account">
                     <span class="account-avatar"><i class="bi bi-person"></i></span>
                     <span class="account-copy">
-                        <span class="account-email">Local owner</span>
-                        <small>Tài khoản cục bộ</small>
+                        <span class="account-email">{{ _('Local owner') }}</span>
+                        <small>{{ _('Local account') }}</small>
                     </span>
                 </div>
                 <form method="post" action="/logout">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button class="sidebar-link sidebar-button" type="submit">
                         <i class="bi bi-box-arrow-right"></i>
-                        <span>Đăng xuất</span>
+                        <span>{{ _('Log out') }}</span>
                     </button>
                 </form>
             </div>
         </aside>
 
         <div class="app-workspace">
-            {% set current_path = request.url.path %}
-            {% if current_path.startswith('/history') %}
-            {% set section = {'eyebrow': 'Nhật ký đồng bộ', 'title': 'Lịch sử', 'subtitle': 'Theo dõi kết quả các lần đồng bộ tự động trong 30 ngày gần nhất.'} %}
-            {% elif current_path.startswith('/settings') %}
-            {% set section = {'eyebrow': 'Cài đặt hệ thống', 'title': 'Cài đặt', 'subtitle': 'Quản lý lịch trình đồng bộ và các tuỳ chọn lưu trữ, cập nhật ứng dụng.'} %}
-            {% elif current_path.startswith('/playlist/') %}
-            {% set section = {'eyebrow': 'Thư viện', 'title': 'Chi tiết playlist', 'subtitle': 'Nghe, tìm kiếm và quản lý các bài hát trong playlist.'} %}
-            {% else %}
-            {% set section = {'eyebrow': 'Kho lưu trữ YouTube của bạn', 'title': 'Bảng điều khiển', 'subtitle': 'Quản lý, đồng bộ và lưu trữ các playlist yêu thích từ YouTube.'} %}
-            {% endif %}
-            <header class="app-topbar">
-                <div class="topbar-heading">
-                    <span class="eyebrow" id="currentSectionEyebrow">{{ section.eyebrow }}</span>
-                    <h1 id="currentSectionLabel">{{ section.title }}</h1>
-                    <p class="topbar-subtitle" id="currentSectionSubtitle">{{ section.subtitle }}</p>
-                </div>
+            {# Replaced on every soft navigation so the title, counters and storage warning stay current. #}
+            <div id="shellHeader" data-nav-section="{% block nav_section %}dashboard{% endblock %}">
                 {% set downloaded_count = topbar_stats.downloaded_count if topbar_stats is defined else 0 %}
                 {% set storage_percent = topbar_stats.storage_percent if topbar_stats is defined else 0 %}
                 {% set storage_level = topbar_stats.storage_level if topbar_stats is defined else 'normal' %}
                 {% set storage_used_label = topbar_stats.storage_used_label if topbar_stats is defined else (user.storage_used_bytes|bytes) %}
                 {% set storage_quota_label = topbar_stats.storage_quota_label if topbar_stats is defined else (user.storage_quota_bytes|bytes) %}
-                <div class="topbar-actions">
-                    <span class="topbar-stat" title="Số file MP3 đã tải xuống">
-                        <span class="topbar-stat-icon"><i class="bi bi-cloud-arrow-down"></i></span>
-                        <span class="topbar-stat-copy">
-                            <strong>{{ downloaded_count }}</strong>
-                            <small>đã tải xuống</small>
+                <header class="app-topbar">
+                    <div class="topbar-heading">
+                        <span class="eyebrow">{% block page_eyebrow %}{{ _('Your YouTube archive') }}{% endblock %}</span>
+                        <h1>{% block page_title %}{{ _('Dashboard') }}{% endblock %}</h1>
+                        <p class="topbar-subtitle">{% block page_subtitle %}{{ _('Manage, sync and archive your favourite YouTube playlists.') }}{% endblock %}</p>
+                    </div>
+                    <div class="topbar-actions">
+                        <span class="topbar-stat" title="{{ _('Downloaded MP3 files') }}">
+                            <span class="topbar-stat-icon"><i class="bi bi-cloud-arrow-down"></i></span>
+                            <span class="topbar-stat-copy">
+                                <strong>{{ downloaded_count }}</strong>
+                                <small>{{ _('downloaded') }}</small>
+                            </span>
                         </span>
-                    </span>
-                    <a class="topbar-stat topbar-storage storage-{{ storage_level }}" href="/settings" style="--storage-percent: {{ storage_percent }}%;" title="Đã dùng {{ storage_used_label }} / {{ storage_quota_label }}">
-                        <span class="storage-ring" aria-hidden="true">
-                            <span>{{ storage_percent }}%</span>
-                        </span>
-                        <span class="topbar-stat-copy">
-                            <strong>{{ storage_used_label }} <span class="topbar-stat-quota">/ {{ storage_quota_label }}</span></strong>
-                            <small>dung lượng đã dùng</small>
-                        </span>
-                        <i class="bi bi-chevron-right topbar-stat-chevron" aria-hidden="true"></i>
-                    </a>
-                </div>
-            </header>
+                        <a class="topbar-stat topbar-storage storage-{{ storage_level }}" href="/settings" style="--storage-percent: {{ storage_percent }}%;" title="{{ _('{used} of {quota} used', used=storage_used_label, quota=storage_quota_label) }}">
+                            <span class="storage-ring" aria-hidden="true">
+                                <span>{{ storage_percent }}%</span>
+                            </span>
+                            <span class="topbar-stat-copy">
+                                <strong>{{ storage_used_label }} <span class="topbar-stat-quota">/ {{ storage_quota_label }}</span></strong>
+                                <small>{{ _('storage used') }}</small>
+                            </span>
+                            <i class="bi bi-chevron-right topbar-stat-chevron" aria-hidden="true"></i>
+                        </a>
+                    </div>
+                </header>
 
-            <main class="app-content">
                 {% if storage_level != 'normal' %}
                 <div class="storage-alert storage-alert-{{ storage_level }}" role="alert">
                     <i class="bi {{ 'bi-exclamation-octagon-fill' if storage_level in ['danger', 'full'] else 'bi-exclamation-triangle-fill' }}"></i>
                     <span>
                         {% if storage_level == 'full' %}
-                        Thư viện đã dùng hết {{ storage_quota_label }}. Các lượt tải mới sẽ tạm dừng.
+                        {{ _('The library has used all {quota}. New downloads are paused.', quota=storage_quota_label) }}
                         {% elif storage_level == 'danger' %}
-                        Thư viện gần đầy: {{ storage_used_label }} / {{ storage_quota_label }} ({{ storage_percent }}%).
+                        {{ _('The library is almost full: {used} / {quota} ({percent}%).', used=storage_used_label, quota=storage_quota_label, percent=storage_percent) }}
                         {% else %}
-                        Dung lượng thư viện đã đạt {{ storage_percent }}% ({{ storage_used_label }} / {{ storage_quota_label }}).
+                        {{ _('Library storage has reached {percent}% ({used} / {quota}).', used=storage_used_label, quota=storage_quota_label, percent=storage_percent) }}
                         {% endif %}
                     </span>
                 </div>
                 {% endif %}
+            </div>
+
+            <main class="app-content">
                 <section class="active-downloads d-none" id="activeDownloads">
                     <div class="active-downloads-header">
                         <div>
-                            <span class="eyebrow">Tác vụ nền</span>
-                            <h2>Đang tải xuống</h2>
+                            <span class="eyebrow">{{ _('Background tasks') }}</span>
+                            <h2>{{ _('Downloading') }}</h2>
                         </div>
-                        <button class="btn icon-btn" type="button" id="activeDownloadsRefresh" title="Làm mới">
+                        <button class="btn icon-btn" type="button" id="activeDownloadsRefresh" title="{{ _('Refresh') }}">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
                     </div>
@@ -135,7 +142,7 @@
                 <div id="pageContent">
     {% else %}
     <nav class="public-nav">
-        <div class="app-shell public-nav-inner">
+        <div class="public-nav-inner">
             <a class="sidebar-brand" href="/login">
                 <span class="brand-mark">
                     <img class="app-logo" src="{{ url_for('static', path='img/logo.svg') }}?v={{ asset_version }}" alt="" aria-hidden="true">
@@ -145,13 +152,11 @@
                     <span>Archiver</span>
                 </span>
             </a>
-            <div class="public-nav-actions">
-                <a class="btn btn-neon" href="/login">Mở khoá</a>
-            </div>
+            {{ language_switch() }}
         </div>
     </nav>
 
-    <main class="container-fluid app-shell public-content">
+    <main class="public-content">
         <div id="pageContent">
     {% endif %}
             {% block content %}{% endblock %}
@@ -162,50 +167,53 @@
         </div>
     </div>
 
-    <section class="global-player-bar d-none" id="globalPlayerBar" aria-label="Music player">
+    <section class="global-player-bar d-none" id="globalPlayerBar" aria-label="{{ _('Music player') }}">
         <div class="global-player-inner">
             <div class="global-player-cover">
                 <img src="{{ url_for('static', path='img/logo.svg') }}?v={{ asset_version }}" alt="" aria-hidden="true">
             </div>
             <div class="global-player-main">
                 <div class="global-player-meta">
-                    <span>Now Playing:</span>
-                    <strong id="globalPlayerTitle">No track selected</strong>
+                    <span>{{ _('Now playing:') }}</span>
+                    <strong id="globalPlayerTitle">{{ _('No track selected') }}</strong>
                 </div>
                 <div class="global-player-controls">
                     <div class="global-player-actions">
-                        <button class="player-icon-btn transport-btn" type="button" id="globalPlayerPrev" title="Previous">
+                        <button class="player-icon-btn transport-btn" type="button" id="globalPlayerPrev" title="{{ _('Previous') }}">
                             <i class="bi bi-skip-start-fill"></i>
                         </button>
-                        <button class="player-icon-btn play-toggle-btn" type="button" id="globalPlayerPlayPause" title="Play / pause">
+                        <button class="player-icon-btn play-toggle-btn" type="button" id="globalPlayerPlayPause" title="{{ _('Play / pause') }}">
                             <i class="bi bi-play-fill"></i>
                         </button>
-                        <button class="player-icon-btn transport-btn" type="button" id="globalPlayerNext" title="Next">
+                        <button class="player-icon-btn transport-btn" type="button" id="globalPlayerNext" title="{{ _('Next') }}">
                             <i class="bi bi-skip-end-fill"></i>
                         </button>
                     </div>
                     <div class="player-timeline">
-                        <input class="player-range" id="globalPlayerSeek" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback position">
+                        <input class="player-range" id="globalPlayerSeek" type="range" min="0" max="1000" value="0" step="1" aria-label="{{ _('Playback position') }}">
                         <div class="player-time-row">
                             <span id="globalPlayerCurrentTime">0:00</span>
                             <span id="globalPlayerDuration">0:00</span>
                         </div>
                     </div>
                     <div class="player-volume">
-                        <button class="player-icon-btn volume-icon" type="button" id="globalPlayerMute" title="Mute">
+                        <button class="player-icon-btn volume-icon" type="button" id="globalPlayerMute" title="{{ _('Mute') }}">
                             <i class="bi bi-volume-up-fill"></i>
                         </button>
-                        <input class="player-range volume-range" id="globalPlayerVolume" type="range" min="0" max="1" value="1" step="0.01" aria-label="Volume">
+                        <input class="player-range volume-range" id="globalPlayerVolume" type="range" min="0" max="1" value="1" step="0.01" aria-label="{{ _('Volume') }}">
                     </div>
                     <div class="player-mode-actions">
-                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerShuffle" title="Shuffle">
+                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerShuffle" title="{{ _('Shuffle') }}">
                             <i class="bi bi-shuffle"></i>
                         </button>
-                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerRepeat" title="Repeat">
-                            <i class="bi bi-repeat"></i>
+                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerRepeat" title="{{ _('Repeat current track') }}">
+                            <i class="bi bi-repeat-1"></i>
                         </button>
-                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerClose" title="Close player">
-                            <i class="bi bi-music-note-list"></i>
+                        <button class="player-icon-btn mode-btn" type="button" id="globalPlayerAutoNext" title="{{ _('Auto-play next') }}">
+                            <i class="bi bi-skip-forward"></i>
+                        </button>
+                        <button class="player-icon-btn" type="button" id="globalPlayerClose" title="{{ _('Close player') }}" aria-label="{{ _('Close player') }}">
+                            <i class="bi bi-x-lg"></i>
                         </button>
                     </div>
                 </div>

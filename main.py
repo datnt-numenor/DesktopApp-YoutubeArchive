@@ -4,15 +4,18 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -21,6 +24,8 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import crud
+import i18n
+from i18n import tr
 from auth import (
     authenticate_desktop_user,
     change_desktop_password,
@@ -56,6 +61,7 @@ from schemas import (
     PlaylistAutoSyncRequest,
     PlaylistAddRequest,
     PlaylistAddResponse,
+    PlaylistSearchVideoSchema,
     SyncScheduleRequest,
     SyncRequest,
     TaskResponse,
@@ -82,7 +88,7 @@ from windows_scheduler import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
-ASSET_VERSION = "20261019-redesign"
+ASSET_VERSION = "20261020-i18n"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -120,6 +126,13 @@ app.add_middleware(SlowAPIMiddleware)
 # (DNS rebinding) and talk to the app as same-origin. Rejecting other Host headers blocks that.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTS)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+@app.exception_handler(HTTPException)
+async def translated_http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, str):
+        exc = HTTPException(status_code=exc.status_code, detail=tr(exc.detail), headers=exc.headers)
+    return await http_exception_handler(request, exc)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
@@ -156,15 +169,16 @@ def format_gigabytes(value: int | None) -> str:
     return f"{size:.0f} GB"
 
 
-VIETNAMESE_WEEKDAYS = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
+def format_local_datetime(value: object, weekday: bool = False, date_only: bool = False, language: str = "vi") -> str:
+    """Render a timestamp as dd/mm/yyyy in local time; unknown text passes through.
 
-
-def format_local_datetime(value: object, weekday: bool = False) -> str:
-    """Render ISO or Task Scheduler timestamps as dd/mm/yyyy in local time; unknown text passes through."""
+    SQLite returns naive datetimes for values the app stored in UTC, so naive datetime objects are
+    UTC. Naive strings come from Task Scheduler, which already reports local time.
+    """
     if not value:
         return ""
     if isinstance(value, datetime):
-        moment = value
+        moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         has_seconds = True
     else:
         text_value = str(value).strip()
@@ -175,14 +189,41 @@ def format_local_datetime(value: object, weekday: bool = False) -> str:
         has_seconds = text_value.count(":") >= 2
     if moment.tzinfo is not None:
         moment = moment.astimezone()
-    label = moment.strftime("%d/%m/%Y %H:%M:%S" if has_seconds else "%d/%m/%Y %H:%M")
-    return f"{VIETNAMESE_WEEKDAYS[moment.weekday()]}, {label}" if weekday else label
+    if date_only:
+        label = moment.strftime("%d/%m/%Y")
+    else:
+        label = moment.strftime("%d/%m/%Y %H:%M:%S" if has_seconds else "%d/%m/%Y %H:%M")
+    return f"{i18n.WEEKDAYS[language][moment.weekday()]}, {label}" if weekday else label
+
+
+@pass_context
+def local_datetime_filter(context, value: object, weekday: bool = False, date_only: bool = False) -> str:
+    return format_local_datetime(value, weekday=weekday, date_only=date_only, language=context.get("lang", "vi"))
 
 
 templates.env.filters["duration"] = format_duration
 templates.env.filters["bytes"] = format_bytes
-templates.env.filters["local_datetime"] = format_local_datetime
-templates.env.globals["weekday_names"] = VIETNAMESE_WEEKDAYS
+templates.env.filters["local_datetime"] = local_datetime_filter
+
+
+@pass_context
+def stored_text_filter(context, value: object) -> str:
+    return i18n.translate_text(context.get("lang", "vi"), value)
+
+
+templates.env.filters["tr_text"] = stored_text_filter
+
+
+def translated_task(task) -> dict[str, object]:
+    """Task progress as sent to the page, with stored error messages in the UI language."""
+    data = task.to_dict()
+    language = i18n.current_language()
+    if data.get("error"):
+        data["error"] = i18n.translate_text(language, data["error"])
+    for item in data.get("errors") or []:
+        if item.get("message"):
+            item["message"] = i18n.translate_text(language, item["message"])
+    return data
 
 
 def calculate_storage_percent(user: User) -> int:
@@ -234,8 +275,13 @@ def login_redirect(request: Request) -> RedirectResponse:
 
 def render_template(request: Request, template_name: str, context: dict[str, object], status_code: int = 200):
     csrf_token = csrf_token_for_request(request)
+    language = i18n.current_language()
     context = {
         **context,
+        "lang": language,
+        "_": lambda message, **values: i18n.translate(language, message, **values),
+        "js_messages": i18n.js_messages(language),
+        "weekday_names": i18n.WEEKDAYS[language],
         "csrf_token": csrf_token,
         "csrf_cookie_name": settings.csrf_cookie_name,
         "csrf_header_name": settings.csrf_header_name,
@@ -309,7 +355,7 @@ async def login(
                     "app_name": settings.app_name,
                     "user": None,
                     "next": safe_next_path(next_path),
-                    "error": "The two passwords do not match.",
+                    "error": tr("The two passwords do not match."),
                     "message": None,
                     "needs_setup": True,
                 },
@@ -326,7 +372,7 @@ async def login(
                     "app_name": settings.app_name,
                     "user": None,
                     "next": safe_next_path(next_path),
-                    "error": str(exc.detail),
+                    "error": tr(str(exc.detail)),
                     "message": None,
                     "needs_setup": True,
                 },
@@ -344,7 +390,7 @@ async def login(
                 "app_name": settings.app_name,
                 "user": None,
                 "next": safe_next_path(next_path),
-                "error": "Password is incorrect or temporarily locked.",
+                "error": tr("Password is incorrect or temporarily locked."),
                 "message": None,
                 "needs_setup": False,
             },
@@ -354,6 +400,17 @@ async def login(
     response = RedirectResponse(safe_next_path(next_path), status_code=status.HTTP_303_SEE_OTHER)
     set_login_cookie(response, user)
     return response
+
+
+@app.post("/language")
+@limiter.limit("30/minute")
+async def change_language(request: Request, _csrf: None = Depends(require_csrf)) -> RedirectResponse:
+    form = await read_form_fields(request)
+    language = form.get("language", "")
+    if language not in i18n.LANGUAGES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported language")
+    await asyncio.to_thread(i18n.set_language, language)
+    return RedirectResponse(safe_next_path(form.get("next")), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/logout")
@@ -460,6 +517,28 @@ async def scheduled_sync_history_page(
     )
 
 
+SCHEDULED_SYNC_CACHE_SECONDS = 30.0
+_scheduled_sync_cache: tuple[float, object, str | None] | None = None
+
+
+async def cached_scheduled_sync_info() -> tuple[object, str | None]:
+    global _scheduled_sync_cache
+    if _scheduled_sync_cache and time.monotonic() - _scheduled_sync_cache[0] < SCHEDULED_SYNC_CACHE_SECONDS:
+        return _scheduled_sync_cache[1], _scheduled_sync_cache[2]
+    info, error = None, None
+    try:
+        info = await asyncio.to_thread(get_scheduled_sync_info)
+    except WindowsSchedulerError as exc:
+        error = str(exc)
+    _scheduled_sync_cache = (time.monotonic(), info, error)
+    return info, error
+
+
+def invalidate_scheduled_sync_cache() -> None:
+    global _scheduled_sync_cache
+    _scheduled_sync_cache = None
+
+
 @app.get("/settings")
 async def settings_page(
     request: Request,
@@ -470,12 +549,7 @@ async def settings_page(
         return login_redirect(request)
     storage_percent = calculate_storage_percent(current_user)
     topbar_stats = await build_topbar_stats(session, current_user)
-    scheduled_sync = None
-    scheduled_sync_error = None
-    try:
-        scheduled_sync = await asyncio.to_thread(get_scheduled_sync_info)
-    except WindowsSchedulerError as exc:
-        scheduled_sync_error = str(exc)
+    scheduled_sync, scheduled_sync_error = await cached_scheduled_sync_info()
     yt_dlp_status_info = await asyncio.to_thread(get_ytdlp_status)
     return render_template(
         request,
@@ -536,8 +610,8 @@ async def open_storage_folder(
         await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(os.startfile, folder)
     except OSError as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not open {folder}") from exc
-    return BaseResponse(status="ok", message="Đã mở thư mục lưu trữ")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=tr("Could not open {folder}", folder=folder)) from exc
+    return BaseResponse(status="ok", message=tr("Opened the storage folder"))
 
 
 @app.patch("/settings/password", response_model=BaseResponse)
@@ -550,7 +624,7 @@ async def update_desktop_password(
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
     await change_desktop_password(session, current_user, payload.current_password, payload.new_password)
-    return BaseResponse(status="ok", message="Password changed successfully")
+    return BaseResponse(status="ok", message=tr("Password changed successfully"))
 
 
 def _orphan_name(path: Path) -> str:
@@ -615,9 +689,9 @@ async def delete_orphaned_media(
 
     await crud.recalculate_user_storage(session, current_user, settings.downloads_dir.parent)
     skipped = len(requested) - deleted
-    message = f"Deleted {deleted} unused MP3 file(s), freed {format_bytes(freed)}"
+    message = tr("Deleted {count} unused MP3 file(s), freed {size}", count=deleted, size=format_bytes(freed))
     if skipped:
-        message += f"; {skipped} file(s) were skipped because they are in use or already gone"
+        message += tr("; {count} file(s) were skipped because they are in use or already gone", count=skipped)
     return BaseResponse(status="ok", message=message)
 
 
@@ -663,6 +737,17 @@ async def api_playlists(
     return await crud.list_playlists(session, current_user.id)
 
 
+@app.get("/api/playlists/search-index")
+@limiter.limit("60/minute")
+async def api_playlist_search_index(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict[int, list[PlaylistSearchVideoSchema]]:
+    del request
+    return await crud.list_playlist_search_index(session, current_user.id)
+
+
 @app.post("/playlist/custom", response_model=PlaylistAddResponse)
 @limiter.limit("20/minute")
 async def create_custom_playlist(
@@ -673,7 +758,7 @@ async def create_custom_playlist(
     _csrf: None = Depends(require_csrf),
 ) -> PlaylistAddResponse:
     playlist = await crud.create_custom_playlist(session, current_user, payload.title)
-    return PlaylistAddResponse(status="ok", message="Custom playlist created", playlist_id=playlist.id)
+    return PlaylistAddResponse(status="ok", message=tr("Custom playlist created"), playlist_id=playlist.id)
 
 
 @app.get("/api/library/downloaded")
@@ -699,7 +784,7 @@ async def add_library_videos(
     added = await crud.add_library_videos_to_custom_playlist(
         session, playlist_id, current_user.id, payload.video_ids
     )
-    return BaseResponse(status="ok", message=f"Added {added} downloaded song(s)")
+    return BaseResponse(status="ok", message=tr("Added {count} downloaded song(s)", count=added))
 
 
 @app.post("/playlist/{playlist_id}/videos/upload", response_model=BaseResponse)
@@ -744,7 +829,7 @@ async def upload_custom_mp3(
             imported.path.unlink(missing_ok=True)
         raise
     await crud.recalculate_user_storage(session, current_user, settings.downloads_dir.parent)
-    return BaseResponse(status="ok", message=f"Imported {imported.title}")
+    return BaseResponse(status="ok", message=tr("Imported {title}", title=imported.title))
 
 
 @app.post("/playlist/{playlist_id}/videos/youtube", response_model=TaskResponse)
@@ -762,7 +847,7 @@ async def add_youtube_videos(
     if not urls:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="At least one YouTube URL is required")
     task = enqueue_custom_youtube_import(playlist.id, current_user.id, playlist.title, urls)
-    return TaskResponse(task_id=task.task_id, status=task.status, message="YouTube MP3 import queued")
+    return TaskResponse(task_id=task.task_id, status=task.status, message=tr("YouTube MP3 import queued"))
 
 
 @app.post("/playlist/add", response_model=PlaylistAddResponse)
@@ -789,7 +874,7 @@ async def add_playlist(
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to add playlist")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    message = "Playlist added; importing metadata" if created else "Playlist already exists; refreshing metadata"
+    message = tr("Playlist added; importing metadata") if created else tr("Playlist already exists; refreshing metadata")
     return PlaylistAddResponse(status="ok", message=message, playlist_id=playlist.id, task_id=task.task_id)
 
 
@@ -810,7 +895,7 @@ async def sync_playlist(
         task = enqueue_sync(playlist_id, current_user.id, playlist.title, payload.format)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return TaskResponse(task_id=task.task_id, status=task.status, message="Sync task queued")
+    return TaskResponse(task_id=task.task_id, status=task.status, message=tr("Sync task queued"))
 
 
 @app.patch("/playlist/{playlist_id}/auto-sync", response_model=BaseResponse)
@@ -824,8 +909,8 @@ async def update_playlist_auto_sync(
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
     playlist = await crud.set_playlist_auto_sync(session, playlist_id, current_user.id, payload.auto_sync)
-    state = "enabled" if playlist.auto_sync else "disabled"
-    return BaseResponse(status="ok", message=f"Auto-sync {state} for {playlist.title}")
+    template = "Auto-sync enabled for {title}" if playlist.auto_sync else "Auto-sync disabled for {title}"
+    return BaseResponse(status="ok", message=tr(template, title=playlist.title))
 
 
 @app.delete("/playlist/{playlist_id}/video/{video_id}", response_model=BaseResponse)
@@ -839,7 +924,7 @@ async def hide_playlist_video(
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
     association = await crud.hide_playlist_video(session, playlist_id, video_id, current_user.id)
-    return BaseResponse(status="ok", message=f"Hidden {association.video.title}")
+    return BaseResponse(status="ok", message=tr("Hidden {title}", title=association.video.title))
 
 
 @app.post("/playlist/{playlist_id}/video/{video_id}/restore", response_model=BaseResponse)
@@ -853,7 +938,7 @@ async def restore_playlist_video(
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
     association = await crud.restore_playlist_video(session, playlist_id, video_id, current_user.id)
-    return BaseResponse(status="ok", message=f"Restored {association.video.title}")
+    return BaseResponse(status="ok", message=tr("Restored {title}", title=association.video.title))
 
 
 @app.delete("/playlist/{playlist_id}", response_model=BaseResponse)
@@ -866,9 +951,9 @@ async def delete_playlist(
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
     orphaned_paths = await crud.delete_playlist(session, playlist_id, current_user.id)
-    message = "Playlist deleted"
+    message = tr("Playlist deleted")
     if orphaned_paths:
-        message += f"; {len(orphaned_paths)} media file/object path(s) left for manual cleanup"
+        message += tr("; {count} media file(s) left for manual cleanup", count=len(orphaned_paths))
     return BaseResponse(status="ok", message=message)
 
 
@@ -909,8 +994,9 @@ async def update_sync_schedule(
     except WindowsSchedulerError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    next_run = f"; next run {scheduled_sync.next_run_time}" if scheduled_sync.next_run_time else ""
-    return BaseResponse(status="ok", message=f"Daily MP3 sync updated to {payload.time}{next_run}")
+    invalidate_scheduled_sync_cache()
+    next_run = tr("; next run {time}", time=scheduled_sync.next_run_time) if scheduled_sync.next_run_time else ""
+    return BaseResponse(status="ok", message=tr("Daily MP3 sync updated to {time}", time=payload.time) + next_run)
 
 
 @app.post("/settings/sync-schedule/install", response_model=BaseResponse)
@@ -926,8 +1012,9 @@ async def install_sync_schedule(
     except WindowsSchedulerError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    next_run = f"; next run {scheduled_sync.next_run_time}" if scheduled_sync.next_run_time else ""
-    return BaseResponse(status="ok", message=f"Daily MP3 sync installed at {payload.time}{next_run}")
+    invalidate_scheduled_sync_cache()
+    next_run = tr("; next run {time}", time=scheduled_sync.next_run_time) if scheduled_sync.next_run_time else ""
+    return BaseResponse(status="ok", message=tr("Daily MP3 sync installed at {time}", time=payload.time) + next_run)
 
 
 @app.get("/task/{task_id}/status", response_model=TaskStatusResponse)
@@ -942,7 +1029,7 @@ async def task_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
     if task.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Task does not belong to this user")
-    return TaskStatusResponse(**task.to_dict())
+    return TaskStatusResponse(**translated_task(task))
 
 
 @app.get("/tasks/active", response_model=list[TaskStatusResponse])
@@ -953,7 +1040,7 @@ async def active_tasks(
     current_user: User = Depends(get_current_user),
 ) -> list[TaskStatusResponse]:
     tasks = await asyncio.to_thread(list_task_statuses, owner_id=current_user.id, playlist_id=playlist_id)
-    return [TaskStatusResponse(**task.to_dict()) for task in tasks]
+    return [TaskStatusResponse(**translated_task(task)) for task in tasks]
 
 
 @app.get("/task/{task_id}/stream")
@@ -975,7 +1062,7 @@ async def task_stream(
             if not task:
                 yield "event: error\ndata: {\"error\":\"Task not found\"}\n\n"
                 return
-            yield f"data: {json.dumps(task.to_dict())}\n\n"
+            yield f"data: {json.dumps(translated_task(task))}\n\n"
             if task.status in {"done", "failed"}:
                 return
             await asyncio.sleep(1)

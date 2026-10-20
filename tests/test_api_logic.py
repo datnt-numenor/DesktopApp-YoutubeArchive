@@ -124,7 +124,7 @@ async def test_soft_hide_and_restore_endpoints_keep_association(session) -> None
 def test_playlist_detail_template_exposes_hide_and_restore_controls() -> None:
     template = (Path(__file__).resolve().parents[1] / "templates" / "detail.html").read_text(encoding="utf-8")
 
-    assert "Bài đã ẩn" in template
+    assert "Hidden songs ({count})" in template
     assert "js-hide-video" in template
     assert "js-restore-video" in template
     assert "Sync MP4" not in template
@@ -197,7 +197,7 @@ async def test_healthz_reports_database_status(session) -> None:
     assert json.loads(response.body) == {"status": "ok", "database": True}
 
 
-async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch) -> None:
+async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch, english_ui) -> None:
     owner = User(id="owner-1", email="owner@example.com", playlist_quota=10)
     session.add(owner)
     await session.commit()
@@ -224,7 +224,7 @@ async def test_add_playlist_returns_quick_pending_playlist(session, monkeypatch)
     assert enqueued == [(response.playlist_id, owner.id, "Importing playlist PL_FAST_ADD")]
 
 
-async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session) -> None:
+async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session, english_ui) -> None:
     owner = User(id="owner-1", email="owner@example.com")
     playlist = Playlist(id=1, owner_id=owner.id, yt_playlist_id="PL123", title="Piano", url="https://example.test")
     session.add_all([owner, playlist])
@@ -245,7 +245,7 @@ async def test_update_playlist_auto_sync_endpoint_updates_owner_playlist(session
     assert response.message == "Auto-sync disabled for Piano"
 
 
-async def test_update_sync_schedule_updates_windows_task(monkeypatch) -> None:
+async def test_update_sync_schedule_updates_windows_task(monkeypatch, english_ui) -> None:
     monkeypatch.setattr(
         "main.set_scheduled_sync_time",
         lambda value: SimpleNamespace(time=value, state="Ready", next_run_time="2026-08-07 12:00"),
@@ -262,7 +262,7 @@ async def test_update_sync_schedule_updates_windows_task(monkeypatch) -> None:
     assert response.message == "Daily MP3 sync updated to 12:00; next run 2026-08-07 12:00"
 
 
-async def test_install_sync_schedule_registers_windows_task(monkeypatch) -> None:
+async def test_install_sync_schedule_registers_windows_task(monkeypatch, english_ui) -> None:
     installed = []
 
     def fake_install(value: str):
@@ -305,7 +305,7 @@ def test_settings_offers_install_button_when_task_is_missing() -> None:
     script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="syncScheduleForm"' in template and "data-installed=" in template
-    assert "Cài đặt đồng bộ hằng ngày" in template
+    assert "Install daily sync" in template
     assert '"/settings/sync-schedule/install"' in script
 
 
@@ -472,7 +472,7 @@ def test_scheduled_history_page_renders_filters_summary_and_sidebar(
         app_module.app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert "Lịch sử tự đồng bộ" in response.text
+    assert "Kết quả các lần tự đồng bộ trong 30 ngày gần nhất" in response.text
     assert 'data-nav="history"' in response.text
     assert "Night music" in response.text
     assert "Không có bài mới trong lần tự đồng bộ này" in response.text
@@ -543,7 +543,7 @@ async def _orphan_fixture(session, tmp_path, monkeypatch):
     return owner, kept, previewed, appeared_later
 
 
-async def test_orphan_cleanup_lists_then_deletes_only_previewed_unused_files(session, tmp_path, monkeypatch) -> None:
+async def test_orphan_cleanup_lists_then_deletes_only_previewed_unused_files(session, tmp_path, monkeypatch, english_ui) -> None:
     owner, kept, previewed, appeared_later = await _orphan_fixture(session, tmp_path, monkeypatch)
     monkeypatch.setattr(app_module, "sync_process_lock", nullcontext)
 

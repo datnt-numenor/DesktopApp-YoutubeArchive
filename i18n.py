@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from config import LOCAL_DATA_DIR
-from i18n_catalog import JS_KEYS, VI
+from i18n_catalog import JS_KEYS, STORED_MESSAGE_PATTERNS, VI
 
 logger = logging.getLogger(__name__)
 
@@ -87,3 +89,29 @@ def js_messages(language: str) -> dict[str, str]:
     """Strings app.js needs; English needs none because keys are the English text."""
     return {key: value for key, value in VI.items() if key in JS_KEYS} if language == "vi" else {}
 
+
+@lru_cache(maxsize=None)
+def _pattern(template: str) -> re.Pattern[str]:
+    parts = re.split(r"\{(\w+)\}", template)
+    regex = "".join(re.escape(part) if index % 2 == 0 else f"(?P<{part}>.+?)" for index, part in enumerate(parts))
+    return re.compile(f"^{regex}$", re.DOTALL)
+
+
+def translate_text(language: str, text: object) -> str:
+    """Translate a message that was stored or produced at runtime (task errors, sync summaries).
+
+    Exact catalog matches are translated directly; messages with numbers are matched against
+    STORED_MESSAGE_PATTERNS. Anything else, such as raw yt-dlp output, is returned unchanged.
+    """
+    if text is None:
+        return ""
+    text = str(text)
+    if language != "vi" or not text:
+        return text
+    if text in VI:
+        return VI[text]
+    for template in STORED_MESSAGE_PATTERNS:
+        match = _pattern(template).match(text)
+        if match:
+            return VI[template].format(**match.groupdict())
+    return text

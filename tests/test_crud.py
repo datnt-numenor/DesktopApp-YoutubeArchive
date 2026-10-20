@@ -73,13 +73,13 @@ async def test_library_song_is_reused_and_archive_ignores_hidden_rows(session) -
     assert added == 1
     assert playlists[custom.id].downloaded_count == 1
     assert playlists[custom.id].archive_percent == 100
-    assert playlists[custom.id].search_videos[0].title == "Library song"
+    assert (await crud.list_playlist_search_index(session, owner.id))[custom.id][0].title == "Library song"
 
     await crud.hide_playlist_video(session, custom.id, video.id, owner.id)
     playlists = {item.id: item for item in await crud.list_playlists(session, owner.id)}
     assert playlists[custom.id].video_count == 0
     assert playlists[custom.id].archive_percent == 0
-    assert playlists[custom.id].search_videos == []
+    assert custom.id not in await crud.list_playlist_search_index(session, owner.id)
 
     await crud.restore_playlist_video(session, custom.id, video.id, owner.id)
     detail = await crud.get_playlist_detail(session, custom.id, owner.id)

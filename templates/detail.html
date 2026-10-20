@@ -1,208 +1,188 @@
 {% extends "base.html" %}
 
+{% block page_eyebrow %}{{ _('Manual playlist') if playlist.source_type == 'CUSTOM' else _('YouTube playlist') }}{% endblock %}
+{% block page_title %}{{ playlist.title }}{% endblock %}
+{% block page_subtitle %}
+{{ _('{count} hidden songs', count=playlist.videos|length) if show_hidden else _('{count} videos', count=playlist.videos|length) }} ·
+{{ _('Last sync: {time}', time=playlist.last_synced|local_datetime) if playlist.last_synced else _('Never synced') }}
+{% endblock %}
+
 {% block content %}
-<div class="detail-bar">
-    <div>
-        <a class="back-link" href="/"><i class="bi bi-arrow-left"></i> Back</a>
-        <h1>{{ playlist.title }}</h1>
-        <p class="text-muted mb-0">
-            {{ playlist.videos|length }} {{ 'bài đã ẩn' if show_hidden else 'videos' }} |
-            Last sync: {{ playlist.last_synced.strftime('%Y-%m-%d %H:%M') if playlist.last_synced else 'Never' }}
-        </p>
-    </div>
-    <div class="detail-actions">
-        {% if show_hidden %}
-        <a class="btn btn-outline-secondary" href="/playlist/{{ playlist.id }}">
-            <i class="bi bi-arrow-left me-1"></i>Danh sách bài hát
+{% set status_labels = {'AVAILABLE': _('Not downloaded'), 'DOWNLOADED': _('Downloaded')} %}
+<section class="detail-page">
+    <div class="dash-card detail-toolbar">
+        <a class="back-link" href="{{ '/playlist/' ~ playlist.id if show_hidden else '/' }}">
+            <i class="bi bi-arrow-left"></i>{{ _('Song list') if show_hidden else _('Back to dashboard') }}
         </a>
-        {% elif playlist.hidden_count %}
-        <a class="btn btn-outline-secondary" href="/playlist/{{ playlist.id }}?hidden=1">
-            <i class="bi bi-eye-slash me-1"></i>Bài đã ẩn ({{ playlist.hidden_count }})
-        </a>
-        {% endif %}
-        {% if playlist.source_type == 'YOUTUBE' %}
-        <label class="auto-sync-toggle form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="Enable scheduled sync for this playlist">
-            <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
-            <span class="auto-sync-copy">
-                <i class="bi bi-arrow-repeat"></i>
-                <span class="js-auto-sync-label">{{ 'Tự đồng bộ: bật' if playlist.auto_sync else 'Tự đồng bộ: tắt' }}</span>
-            </span>
-        </label>
-        <button class="btn btn-outline-danger js-sync" data-playlist-id="{{ playlist.id }}" data-format="mp3">
-            <i class="bi bi-music-note-beamed me-1"></i>Sync MP3
-        </button>
-        {% else %}
-        <span class="playlist-custom-label"><i class="bi bi-folder-music"></i> Playlist thủ công</span>
-        {% endif %}
-    </div>
-</div>
-
-{% if playlist.source_type == 'CUSTOM' and not show_hidden %}
-<section class="custom-sources-panel">
-    <div class="panel-header compact">
-        <h2>Thêm bài hát</h2>
-        <p>Chọn từ thư viện, nhập MP3 hoặc tải MP3 từ link YouTube.</p>
-    </div>
-    <div class="custom-source-grid">
-        <form id="addLibraryVideosForm" class="custom-source-card" data-playlist-id="{{ playlist.id }}">
-            <h3><i class="bi bi-collection-play"></i> Thư viện đã tải</h3>
-            <input class="form-control form-control-sm js-library-search" type="search" placeholder="Tìm bài đã tải">
-            <div class="custom-library-list">
-                {% for item in library_videos %}
-                <label class="custom-library-item" data-search="{{ (item.title ~ ' ' ~ item.channel_name)|lower }}">
-                    <input class="form-check-input" type="checkbox" name="video_ids" value="{{ item.id }}">
-                    <span><strong>{{ item.title }}</strong><small>{{ item.channel_name or 'Unknown' }}</small></span>
-                </label>
-                {% else %}
-                <div class="text-muted small">Chưa có bài MP3 nào trong thư viện.</div>
-                {% endfor %}
-            </div>
-            <button class="btn btn-sm btn-outline-secondary" type="submit"><i class="bi bi-plus-lg me-1"></i>Thêm bài đã chọn</button>
-        </form>
-
-        <div class="custom-source-card">
-            <h3><i class="bi bi-file-earmark-music"></i> File MP3 từ máy</h3>
-            <input class="form-control" id="customMp3Files" type="file" accept="audio/mpeg,.mp3" multiple data-playlist-id="{{ playlist.id }}">
-            <p class="text-muted small mb-0">File được sao chép vào thư viện và tự chống trùng bằng nội dung.</p>
-            <button class="btn btn-sm btn-outline-secondary" id="uploadCustomMp3" type="button" data-playlist-id="{{ playlist.id }}"><i class="bi bi-upload me-1"></i>Nhập MP3</button>
-            <div class="small text-muted" id="customMp3UploadStatus"></div>
-        </div>
-
-        <form id="addYoutubeVideosForm" class="custom-source-card" data-playlist-id="{{ playlist.id }}">
-            <h3><i class="bi bi-youtube"></i> Link YouTube</h3>
-            <textarea class="form-control" name="urls" rows="5" placeholder="Mỗi dòng một link video YouTube, tối đa 50 link" required></textarea>
-            <button class="btn btn-sm btn-outline-danger" type="submit"><i class="bi bi-cloud-arrow-down me-1"></i>Tải MP3</button>
-        </form>
-    </div>
-</section>
-{% endif %}
-
-<section class="playlist-controls">
-    <div class="playlist-search">
-        <label class="visually-hidden" for="videoSearch">Search videos</label>
-        <div class="input-group">
-            <span class="input-group-text"><i class="bi bi-search"></i></span>
-            <input class="form-control" id="videoSearch" type="search" placeholder="Search by video name, channel, or ID" autocomplete="off">
-            <button class="btn btn-outline-secondary" type="button" id="clearVideoSearch" title="Clear search">
-                <i class="bi bi-x-lg"></i>
+        <div class="detail-actions">
+            {% if not show_hidden and playlist.hidden_count %}
+            <a class="btn btn-ghost" href="/playlist/{{ playlist.id }}?hidden=1">
+                <i class="bi bi-eye-slash"></i><span>{{ _('Hidden songs ({count})', count=playlist.hidden_count) }}</span>
+            </a>
+            {% endif %}
+            {% if playlist.source_type == 'YOUTUBE' %}
+            <label class="auto-sync-toggle form-check form-switch {{ 'is-enabled' if playlist.auto_sync else '' }}" title="{{ _('Include this playlist in the scheduled sync') }}">
+                <input class="form-check-input js-auto-sync" type="checkbox" role="switch" data-playlist-id="{{ playlist.id }}" {% if playlist.auto_sync %}checked{% endif %}>
+                <span class="auto-sync-copy">
+                    <i class="bi bi-arrow-repeat"></i>
+                    <span class="js-auto-sync-label">{{ _('Auto-sync: on') if playlist.auto_sync else _('Auto-sync: off') }}</span>
+                </span>
+            </label>
+            <button class="btn btn-gradient js-sync" type="button" data-playlist-id="{{ playlist.id }}" data-format="mp3">
+                <i class="bi bi-music-note-beamed"></i><span>{{ _('Sync MP3') }}</span>
             </button>
-        </div>
-        <div class="small text-muted mt-2" id="videoSearchCount">{{ playlist.videos|length }} videos shown</div>
-    </div>
-
-    <div class="dropdown">
-        <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
-            <i class="bi bi-sliders me-1"></i>Playback options
-        </button>
-        <div class="dropdown-menu dropdown-menu-end playback-menu">
-            <label class="dropdown-item playback-option" for="playbackRepeat">
-                <span><i class="bi bi-repeat me-2"></i>Repeat current track</span>
-                <input class="form-check-input" id="playbackRepeat" type="checkbox">
-            </label>
-            <label class="dropdown-item playback-option" for="playbackAutoNext">
-                <span><i class="bi bi-skip-forward me-2"></i>Auto-play next</span>
-                <input class="form-check-input" id="playbackAutoNext" type="checkbox" checked>
-            </label>
-            <label class="dropdown-item playback-option" for="playbackShuffle">
-                <span><i class="bi bi-shuffle me-2"></i>Shuffle</span>
-                <input class="form-check-input" id="playbackShuffle" type="checkbox">
-            </label>
+            {% endif %}
         </div>
     </div>
-</section>
 
-<div class="table-shell">
-    <table class="table align-middle mb-0">
-        <thead>
-            <tr>
-                <th>Video</th>
-                <th>Channel</th>
-                <th>Duration</th>
-                <th>Status</th>
-                <th class="text-end">Media</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for video in playlist.videos %}
-            <tr class="js-video-row {{ 'video-deleted-on-yt' if video.status == 'DELETED_ON_YT' else '' }}" data-title="{{ video.title|lower }}" data-channel="{{ (video.channel_name or '')|lower }}" data-yt-id="{{ video.yt_video_id|lower }}">
-                <td>
-                    <div class="video-cell">
-                        <div class="video-thumb-wrap">
-                        {% if video.thumbnail_url %}
-                        <img src="{{ video.thumbnail_url }}" alt="" loading="lazy" onerror="this.classList.add('d-none'); this.nextElementSibling.classList.remove('d-none')">
-                        <div class="thumb-placeholder d-none"><i class="bi bi-image"></i></div>
-                        {% else %}
-                        <div class="thumb-placeholder"><i class="bi bi-image"></i></div>
-                        {% endif %}
-                        {% if video.status == 'DELETED_ON_YT' %}
-                        <span class="deleted-thumb-mark" title="Video đã bị xóa khỏi YouTube"><i class="bi bi-exclamation-triangle"></i></span>
-                        {% endif %}
-                        </div>
-                        <div>
-                            <div class="fw-semibold js-video-title">{{ video.title }}</div>
-                            <div class="small text-muted">{{ 'File cục bộ' if video.source_type == 'LOCAL_FILE' else video.yt_video_id }}</div>
-                            {% if video.download_error %}
-                            <div class="download-error mt-1">
-                                <i class="bi bi-exclamation-triangle me-1"></i>{{ video.download_error }}
-                            </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </td>
-                <td>{{ video.channel_name or 'Unknown' }}</td>
-                <td>{{ video.duration|duration }}</td>
-                <td>
-                    <div class="video-statuses">
-                        {% if video.local_file_path %}
-                        <span class="status-badge status-downloaded">DOWNLOADED</span>
-                        {% elif video.status != 'DELETED_ON_YT' %}
-                        <span class="status-badge status-{{ video.status|lower }}">{{ video.status }}</span>
-                        {% endif %}
-                        {% if video.status == 'DELETED_ON_YT' %}
-                        <span class="status-badge status-deleted_on_yt"><i class="bi bi-exclamation-triangle me-1"></i>Đã xóa trên YouTube</span>
-                        {% endif %}
-                        {% if video.is_removed_from_youtube_playlist %}
-                        <span class="status-badge status-removed-from-playlist"><i class="bi bi-list-x me-1"></i>Đã gỡ khỏi playlist YouTube</span>
-                        {% endif %}
-                        {% if video.is_hidden %}
-                        <span class="status-badge status-hidden"><i class="bi bi-eye-slash me-1"></i>Đã ẩn</span>
-                        {% endif %}
-                    </div>
-                </td>
-                <td class="text-end">
-                    <div class="video-media-actions">
-                    {% if show_hidden %}
-                    <button class="btn btn-sm btn-outline-secondary js-restore-video" type="button"
-                            data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}" title="Khôi phục bài hát">
-                        <i class="bi bi-arrow-counterclockwise me-1"></i>Khôi phục
-                    </button>
+    {% if playlist.source_type == 'CUSTOM' and not show_hidden %}
+    <section class="dash-card custom-sources-panel">
+        <header class="settings-card-head">
+            <span class="settings-card-icon tone-violet"><i class="bi bi-plus-lg"></i></span>
+            <div>
+                <h2>{{ _('Add songs') }}</h2>
+                <p>{{ _('Pick from the library, import MP3 files or download MP3 from YouTube links.') }}</p>
+            </div>
+        </header>
+        <div class="custom-source-grid">
+            <form id="addLibraryVideosForm" class="settings-inset custom-source-card" data-playlist-id="{{ playlist.id }}">
+                <h3><i class="bi bi-collection-play"></i>{{ _('Downloaded library') }}</h3>
+                <input class="form-control js-library-search" type="search" placeholder="{{ _('Search downloaded songs') }}">
+                <div class="custom-library-list">
+                    {% for item in library_videos %}
+                    <label class="custom-library-item" data-search="{{ (item.title ~ ' ' ~ (item.channel_name or ''))|lower }}">
+                        <input class="form-check-input" type="checkbox" name="video_ids" value="{{ item.id }}">
+                        <span><strong>{{ item.title }}</strong><small>{{ item.channel_name or _('Unknown') }}</small></span>
+                    </label>
                     {% else %}
-                        {% if video.local_file_path %}
-                        <button class="btn btn-sm btn-outline-secondary js-play-media" type="button" data-video-id="{{ video.id }}" data-stream-url="/stream/{{ video.id }}" data-title="{{ video.title }}" title="Play media">
-                            <i class="bi bi-play-circle"></i>
-                        </button>
-                        {% else %}
-                        <span class="text-muted small">Not saved</span>
-                        {% endif %}
-                        <button class="btn btn-sm btn-outline-danger js-hide-video" type="button"
-                                data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}" title="Ẩn bài khỏi playlist">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    {% endif %}
-                    </div>
-                </td>
-            </tr>
-            {% else %}
-            <tr>
-                <td colspan="5" class="empty-state">
-                    {{ 'Chưa có bài nào được ẩn.' if show_hidden else 'No videos stored for this playlist.' }}
-                </td>
-            </tr>
-            {% endfor %}
-            <tr class="d-none" id="videoSearchEmpty">
-                <td colspan="5" class="empty-state">No videos match your search.</td>
-            </tr>
-        </tbody>
-    </table>
-</div>
+                    <div class="settings-note">{{ _('There are no MP3 songs in the library yet.') }}</div>
+                    {% endfor %}
+                </div>
+                <button class="btn btn-outline-gradient" type="submit"><i class="bi bi-plus-lg"></i><span>{{ _('Add selected songs') }}</span></button>
+            </form>
+
+            <div class="settings-inset custom-source-card">
+                <h3><i class="bi bi-file-earmark-music"></i>{{ _('MP3 files from this computer') }}</h3>
+                <input class="form-control" id="customMp3Files" type="file" accept="audio/mpeg,.mp3" multiple data-playlist-id="{{ playlist.id }}">
+                <p class="settings-note">{{ _('Files are copied into the library; duplicates are detected by content.') }}</p>
+                <button class="btn btn-outline-gradient" id="uploadCustomMp3" type="button" data-playlist-id="{{ playlist.id }}"><i class="bi bi-upload"></i><span>{{ _('Import MP3') }}</span></button>
+                <div class="settings-note" id="customMp3UploadStatus"></div>
+            </div>
+
+            <form id="addYoutubeVideosForm" class="settings-inset custom-source-card" data-playlist-id="{{ playlist.id }}">
+                <h3><i class="bi bi-youtube"></i>{{ _('YouTube links') }}</h3>
+                <textarea class="form-control" name="urls" rows="5" placeholder="{{ _('One YouTube video link per line, up to 50 links') }}" required></textarea>
+                <button class="btn btn-gradient" type="submit"><i class="bi bi-cloud-arrow-down"></i><span>{{ _('Download MP3') }}</span></button>
+            </form>
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="dash-card song-panel">
+        <div class="song-panel-head">
+            <div class="field-with-icon song-search">
+                <label class="visually-hidden" for="videoSearch">{{ _('Search songs') }}</label>
+                <i class="bi bi-search"></i>
+                <input id="videoSearch" type="search" placeholder="{{ _('Search by song name, channel or ID') }}" autocomplete="off">
+                <button class="field-clear" type="button" id="clearVideoSearch" title="{{ _('Clear search') }}" aria-label="{{ _('Clear search') }}">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <span class="library-count" id="videoSearchCount">{{ _('{count} videos', count=playlist.videos|length) }}</span>
+        </div>
+
+        <div class="table-responsive">
+            <table class="song-table">
+                <thead>
+                    <tr>
+                        <th>{{ _('Song') }}</th>
+                        <th>{{ _('Channel') }}</th>
+                        <th>{{ _('Duration') }}</th>
+                        <th>{{ _('Status') }}</th>
+                        <th class="text-end">{{ _('Actions') }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for video in playlist.videos %}
+                    <tr class="js-video-row {{ 'video-deleted-on-yt' if video.status == 'DELETED_ON_YT' else '' }}" data-title="{{ video.title|lower }}" data-channel="{{ (video.channel_name or '')|lower }}" data-yt-id="{{ video.yt_video_id|lower }}">
+                        <td>
+                            <div class="video-cell">
+                                <div class="video-thumb-wrap">
+                                    {% if video.thumbnail_url %}
+                                    <img src="{{ video.thumbnail_url }}" alt="" loading="lazy" onerror="this.classList.add('d-none'); this.nextElementSibling.classList.remove('d-none')">
+                                    <div class="thumb-placeholder d-none"><i class="bi bi-image"></i></div>
+                                    {% else %}
+                                    <div class="thumb-placeholder"><i class="bi bi-music-note"></i></div>
+                                    {% endif %}
+                                    {% if video.status == 'DELETED_ON_YT' %}
+                                    <span class="deleted-thumb-mark" title="{{ _('The video was removed from YouTube') }}"><i class="bi bi-exclamation-triangle"></i></span>
+                                    {% endif %}
+                                </div>
+                                <div class="video-copy">
+                                    <strong class="js-video-title">{{ video.title }}</strong>
+                                    <small>{{ _('Local file') if video.source_type == 'LOCAL_FILE' else video.yt_video_id }}</small>
+                                    {% if video.download_error %}
+                                    <div class="download-error"><i class="bi bi-exclamation-triangle me-1"></i>{{ video.download_error|tr_text }}</div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </td>
+                        <td class="cell-muted">{{ video.channel_name or _('Unknown') }}</td>
+                        <td class="cell-muted">{{ video.duration|duration }}</td>
+                        <td>
+                            <div class="video-statuses">
+                                {% if video.local_file_path %}
+                                <span class="status-badge status-downloaded"><i class="bi bi-check2"></i>{{ _('Downloaded') }}</span>
+                                {% elif video.status != 'DELETED_ON_YT' %}
+                                <span class="status-badge status-{{ video.status|lower }}">{{ status_labels.get(video.status, video.status) }}</span>
+                                {% endif %}
+                                {% if video.status == 'DELETED_ON_YT' %}
+                                <span class="status-badge status-deleted_on_yt"><i class="bi bi-exclamation-triangle"></i>{{ _('Removed from YouTube') }}</span>
+                                {% endif %}
+                                {% if video.is_removed_from_youtube_playlist %}
+                                <span class="status-badge status-removed-from-playlist"><i class="bi bi-list-ul"></i>{{ _('Removed from the YouTube playlist') }}</span>
+                                {% endif %}
+                                {% if video.is_hidden %}
+                                <span class="status-badge status-hidden"><i class="bi bi-eye-slash"></i>{{ _('Hidden') }}</span>
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td class="text-end">
+                            <div class="video-media-actions">
+                                {% if show_hidden %}
+                                <button class="btn btn-ghost btn-sm js-restore-video" type="button"
+                                        data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}">
+                                    <i class="bi bi-arrow-counterclockwise"></i><span>{{ _('Restore') }}</span>
+                                </button>
+                                {% else %}
+                                {% if video.local_file_path %}
+                                <button class="row-icon-btn js-play-media" type="button" data-video-id="{{ video.id }}" data-stream-url="/stream/{{ video.id }}" data-title="{{ video.title }}" title="{{ _('Play') }}" aria-label="{{ _('Play') }}">
+                                    <i class="bi bi-play-fill"></i>
+                                </button>
+                                {% else %}
+                                <span class="cell-muted small">{{ _('Not saved') }}</span>
+                                {% endif %}
+                                <button class="row-icon-btn is-danger js-hide-video" type="button"
+                                        data-playlist-id="{{ playlist.id }}" data-video-id="{{ video.id }}" data-title="{{ video.title }}" title="{{ _('Hide from the playlist') }}" aria-label="{{ _('Hide from the playlist') }}">
+                                    <i class="bi bi-eye-slash"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="empty-state">
+                            {{ _('No songs have been hidden.') if show_hidden else _('No songs stored in this playlist yet.') }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="d-none" id="videoSearchEmpty">
+                        <td colspan="5" class="empty-state">{{ _('No songs match your search.') }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</section>
 {% endblock %}

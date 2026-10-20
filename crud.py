@@ -88,23 +88,6 @@ async def list_playlists(session: AsyncSession, owner_id: str) -> list[PlaylistS
         .order_by(Playlist.created_at.desc())
     )
     playlist_rows = result.all()
-    search_result = await session.execute(
-        select(PlaylistVideo.playlist_id, Video.id, Video.title, Video.channel_name, Video.yt_video_id)
-        .join(PlaylistVideo.video)
-        .join(PlaylistVideo.playlist)
-        .where(Playlist.owner_id == owner_id, PlaylistVideo.hidden_at.is_(None))
-        .order_by(PlaylistVideo.added_at.desc())
-    )
-    search_videos: dict[int, list[PlaylistSearchVideoSchema]] = {}
-    for playlist_id, video_id, title, channel_name, source_id in search_result.all():
-        search_videos.setdefault(playlist_id, []).append(
-            PlaylistSearchVideoSchema(
-                id=video_id,
-                title=title,
-                channel_name=channel_name,
-                source_id=source_id,
-            )
-        )
 
     playlists = []
     for playlist, video_count, downloaded_count, thumbnail_url in playlist_rows:
@@ -123,10 +106,26 @@ async def list_playlists(session: AsyncSession, owner_id: str) -> list[PlaylistS
                 archive_percent=round(downloaded / total * 100) if total else 0,
                 thumbnail_url=thumbnail_url,
                 source_type=playlist.source_type.value,
-                search_videos=search_videos.get(playlist.id, []),
             )
         )
     return playlists
+
+
+async def list_playlist_search_index(session: AsyncSession, owner_id: str) -> dict[int, list[PlaylistSearchVideoSchema]]:
+    """Visible songs per playlist, for the dashboard search; loaded on demand instead of with every page."""
+    search_result = await session.execute(
+        select(PlaylistVideo.playlist_id, Video.id, Video.title, Video.channel_name, Video.yt_video_id)
+        .join(PlaylistVideo.video)
+        .join(PlaylistVideo.playlist)
+        .where(Playlist.owner_id == owner_id, PlaylistVideo.hidden_at.is_(None))
+        .order_by(PlaylistVideo.added_at.desc())
+    )
+    search_videos: dict[int, list[PlaylistSearchVideoSchema]] = {}
+    for playlist_id, video_id, title, channel_name, source_id in search_result.all():
+        search_videos.setdefault(playlist_id, []).append(
+            PlaylistSearchVideoSchema(id=video_id, title=title, channel_name=channel_name, source_id=source_id)
+        )
+    return search_videos
 
 
 async def find_orphaned_media_files(session: AsyncSession, data_dir: Path) -> list[Path]:
