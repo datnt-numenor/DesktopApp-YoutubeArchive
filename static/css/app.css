@@ -2440,6 +2440,11 @@ body.has-player-bar .toast-container {
     gap: 12px;
 }
 
+.settings-empty.is-error {
+    color: var(--red);
+    flex-wrap: wrap;
+}
+
 .ytdlp-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

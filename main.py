@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.templating import Jinja2Templates
@@ -89,7 +89,7 @@ from windows_scheduler import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
-ASSET_VERSION = "20261020-search-refresh"
+ASSET_VERSION = "20261020-settings-async"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -591,7 +591,6 @@ async def settings_page(
         return login_redirect(request)
     storage_percent = calculate_storage_percent(current_user)
     topbar_stats = await build_topbar_stats(session, current_user)
-    scheduled_sync, scheduled_sync_error = await cached_scheduled_sync_info()
     yt_dlp_status_info = await asyncio.to_thread(get_ytdlp_status)
     return render_template(
         request,
@@ -600,8 +599,9 @@ async def settings_page(
             "request": request,
             "app_name": settings.app_name,
             "user": current_user,
-            "scheduled_sync": scheduled_sync,
-            "scheduled_sync_error": scheduled_sync_error,
+            # Asking Task Scheduler takes seconds, so the schedule cards render as placeholders and
+            # app.js fills them in from /api/sync-schedule.
+            "schedule_loading": True,
             "yt_dlp_status": yt_dlp_status_info,
             "storage_percent": storage_percent,
             "topbar_stats": topbar_stats,
@@ -609,6 +609,29 @@ async def settings_page(
             "downloads_dir": str(settings.downloads_dir),
         },
     )
+
+
+@app.get("/api/sync-schedule", response_class=HTMLResponse)
+@limiter.limit("60/minute")
+async def sync_schedule_cards(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """HTML for the schedule and sync-status cards, rendered with the same template as the page."""
+    del current_user
+    scheduled_sync, scheduled_sync_error = await cached_scheduled_sync_info()
+    response = render_template(
+        request,
+        "_sync_schedule_cards.html",
+        {
+            "request": request,
+            "schedule_loading": False,
+            "scheduled_sync": scheduled_sync,
+            "scheduled_sync_error": scheduled_sync_error,
+        },
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/yt-dlp/status", response_model=YtDlpStatusResponse)

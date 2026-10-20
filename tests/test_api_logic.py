@@ -33,6 +33,7 @@ from schemas import (
     VideoSchema,
 )
 import auth
+import windows_scheduler
 import tasks
 
 LOCAL_BASE_URL = "http://127.0.0.1:8765"
@@ -301,7 +302,7 @@ async def test_install_sync_schedule_reports_scheduler_errors(monkeypatch) -> No
 
 
 def test_settings_offers_install_button_when_task_is_missing() -> None:
-    template = (Path(__file__).resolve().parents[1] / "templates" / "settings.html").read_text(encoding="utf-8")
+    template = (Path(__file__).resolve().parents[1] / "templates" / "_sync_schedule_cards.html").read_text(encoding="utf-8")
     script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="syncScheduleForm"' in template and "data-installed=" in template
@@ -702,3 +703,105 @@ def test_song_search_index_is_reloaded_after_data_changes() -> None:
 
     assert "invalidatePlaylistSearchIndex();" in invalidate_page_cache
     assert "if (generation === playlistSearchIndexGeneration) playlistSearchIndex = index;" in script
+
+
+@pytest.fixture
+def settings_client(monkeypatch):
+    owner = User(
+        id="owner-schedule",
+        email="schedule@example.com",
+        storage_quota_bytes=20 * 1024 * 1024 * 1024,
+        storage_used_bytes=0,
+    )
+
+    async def fake_user():
+        return owner
+
+    async def fake_session():
+        yield None
+
+    async def fake_downloaded_count(_session, _owner_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(app_module.crud, "count_downloaded_media", fake_downloaded_count)
+    monkeypatch.setattr(app_module, "get_ytdlp_status", lambda: {"installed_version": None})
+    app_module.invalidate_scheduled_sync_cache()
+    app_module.app.dependency_overrides[app_module.get_optional_user] = fake_user
+    app_module.app.dependency_overrides[app_module.get_session] = fake_session
+    try:
+        yield TestClient(app_module.app, base_url=LOCAL_BASE_URL)
+    finally:
+        app_module.app.dependency_overrides.clear()
+        app_module.invalidate_scheduled_sync_cache()
+
+
+def test_settings_page_renders_without_asking_task_scheduler(settings_client, monkeypatch) -> None:
+    def must_not_run():
+        raise AssertionError("opening Settings must not wait for PowerShell")
+
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", must_not_run)
+
+    response = settings_client.get("/settings")
+
+    assert response.status_code == 200
+    assert 'id="syncScheduleCard"' in response.text and 'data-loading="true"' in response.text
+    assert 'id="syncStatusCard"' in response.text
+    assert "schedule-info" not in response.text
+    assert 'id="changePasswordForm"' in response.text
+
+
+def test_sync_schedule_api_returns_the_cards_for_an_installed_task(settings_client, monkeypatch) -> None:
+    info = windows_scheduler.ScheduledSyncInfo(
+        time="07:15",
+        state="Ready",
+        next_run_time="2026-10-21 07:15",
+        last_run_time="2026-10-20 07:15:03",
+        last_task_result=0,
+        last_task_result_hex="0x00000000",
+        wake_to_run=True,
+        sync_status="success",
+        sync_succeeded_count=3,
+    )
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", lambda: info)
+
+    response = settings_client.get("/api/sync-schedule")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert 'data-installed="true"' in response.text
+    assert 'value="07:15"' in response.text
+    assert "schedule-info" in response.text
+    assert 'data-loading="true"' not in response.text
+    assert "<html" not in response.text
+
+
+def test_sync_schedule_api_reports_a_task_that_is_not_installed(settings_client, monkeypatch) -> None:
+    def not_installed():
+        raise windows_scheduler.WindowsSchedulerError("Scheduled task is not installed")
+
+    monkeypatch.setattr(app_module, "get_scheduled_sync_info", not_installed)
+
+    response = settings_client.get("/api/sync-schedule")
+
+    assert response.status_code == 200
+    assert 'data-installed="false"' in response.text
+    assert "Scheduled task is not installed" in response.text
+    assert "Install daily sync" in response.text or "Cài đặt đồng bộ hằng ngày" in response.text
+
+
+def test_sync_schedule_api_requires_login() -> None:
+    response = TestClient(app_module.app, base_url=LOCAL_BASE_URL).get("/api/sync-schedule")
+
+    assert response.status_code == 401
+
+
+def test_settings_script_loads_schedule_cards_after_the_page_renders() -> None:
+    script = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    init = script.split("function initPlaylistTools()", 1)[1].split("\n", 2)[1]
+    submit = script.split('event.target.id === "syncScheduleForm"', 1)[1].split('event.target.id === "changePasswordForm"', 1)[0]
+
+    assert "loadSyncSchedulePanel();" in init
+    assert '"/api/sync-schedule"' in script
+    assert "await fetchSyncSchedulePanel();" in submit
+    assert "refreshCurrentPage" not in submit
+    assert "js-retry-sync-schedule" in script

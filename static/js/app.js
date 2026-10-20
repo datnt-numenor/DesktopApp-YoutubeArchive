@@ -83,6 +83,20 @@ async function requestJson(url, options = {}) {
     return data;
 }
 
+async function requestHtml(url, timeoutMs = 12000) {
+    const response = await fetchWithTimeout(url, { headers: { Accept: "text/html" } }, timeoutMs);
+    if (response.status === 401) {
+        if (!isLoggingOut) {
+            window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+        }
+        throw new Error(t("Authentication required"));
+    }
+    if (!response.ok) {
+        throw new Error(t("Request failed with {status}", { status: response.status }));
+    }
+    return response.text();
+}
+
 const YTDLP_VERSION_STORAGE_KEY = "ytarchiveYtDlpVersion";
 let ytDlpStatusRefreshing = false;
 
@@ -1121,7 +1135,68 @@ function initGlobalPlayer() {
     updateGlobalPlayerControls();
 }
 
+// The schedule cards are rendered as placeholders because asking Windows Task Scheduler takes
+// seconds; /api/sync-schedule returns the finished cards, rendered by the same template.
+const SYNC_SCHEDULE_CARD_IDS = ["syncScheduleCard", "syncStatusCard"];
+const SYNC_SCHEDULE_TIMEOUT_MS = 45000; // above the 30 s PowerShell timeout on the server
+let syncSchedulePanelRequest = null;
+
+async function fetchSyncSchedulePanel() {
+    const html = await requestHtml("/api/sync-schedule", SYNC_SCHEDULE_TIMEOUT_MS);
+    const fresh = new DOMParser().parseFromString(html, "text/html");
+    SYNC_SCHEDULE_CARD_IDS.forEach((id) => {
+        const current = document.getElementById(id);
+        const next = fresh.getElementById(id);
+        // The user may have left the page while this was loading.
+        if (current && next) current.replaceWith(next);
+    });
+}
+
+function showSyncScheduleLoading() {
+    const loadingText = document.getElementById("syncScheduleCard")?.dataset.loadingText || "";
+    document.querySelectorAll("[data-schedule-status]").forEach((status) => {
+        status.classList.remove("is-error");
+        const spinner = document.createElement("span");
+        spinner.className = "spinner-border spinner-border-sm";
+        spinner.setAttribute("aria-hidden", "true");
+        const text = document.createElement("span");
+        text.textContent = loadingText;
+        status.replaceChildren(spinner, text);
+    });
+}
+
+function showSyncScheduleError(error) {
+    console.warn("Unable to load the sync schedule", error);
+    const card = document.getElementById("syncScheduleCard");
+    document.querySelectorAll("[data-schedule-status]").forEach((status) => {
+        status.classList.add("is-error");
+        const text = document.createElement("span");
+        text.textContent = card?.dataset.errorText || error.message;
+        status.replaceChildren(text);
+    });
+    const status = document.querySelector("#syncScheduleCard [data-schedule-status]");
+    if (status) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "btn btn-outline-secondary btn-sm js-retry-sync-schedule";
+        retry.textContent = card?.dataset.retryText || "";
+        status.appendChild(retry);
+    }
+}
+
+async function loadSyncSchedulePanel() {
+    if (syncSchedulePanelRequest) return;
+    if (document.getElementById("syncScheduleCard")?.dataset.loading !== "true") return;
+    syncSchedulePanelRequest = fetchSyncSchedulePanel()
+        .catch(showSyncScheduleError)
+        .finally(() => {
+            syncSchedulePanelRequest = null;
+        });
+    await syncSchedulePanelRequest;
+}
+
 function initPlaylistTools() {
+    loadSyncSchedulePanel();
     const playlistSearch = document.getElementById("playlistSearch");
     const search = document.getElementById("videoSearch");
     const clearSearch = document.getElementById("clearVideoSearch");
@@ -1354,11 +1429,12 @@ document.addEventListener("submit", async (event) => {
             });
             invalidatePageCache();
             showToast(data.message || t("Settings saved"));
-            await refreshCurrentPage();
+            // Only the schedule cards changed; reloading the whole page would redo everything.
+            await fetchSyncSchedulePanel();
         } catch (error) {
             showToast(error.message, "danger");
         } finally {
-            if (button) button.disabled = false;
+            if (button?.isConnected) button.disabled = false;
         }
     }
 
@@ -1641,6 +1717,12 @@ document.addEventListener("click", async (event) => {
             showToast(error.message, "danger");
             hideVideoButton.disabled = false;
         }
+        return;
+    }
+
+    if (event.target.closest(".js-retry-sync-schedule")) {
+        showSyncScheduleLoading();
+        await loadSyncSchedulePanel();
         return;
     }
 
