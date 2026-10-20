@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -18,7 +19,7 @@ from models import User
 
 LOCAL_DEV_PASSWORD_MARKER = "local-dev-user"
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
-PASSWORD_ITERATIONS = 260_000
+PASSWORD_ITERATIONS = 600_000  # OWASP 2023 minimum for PBKDF2-HMAC-SHA256
 
 
 def normalize_email(email: str) -> str:
@@ -86,6 +87,25 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(password_hash, expected)
 
 
+def password_needs_rehash(stored_hash: str) -> bool:
+    """True for hashes created with fewer iterations than the current setting."""
+    try:
+        algorithm, iterations_value, _salt, _hash = stored_hash.split("$", 3)
+        return algorithm != PASSWORD_ALGORITHM or int(iterations_value) < PASSWORD_ITERATIONS
+    except ValueError:
+        return False
+
+
+# PBKDF2 at 600k iterations takes a noticeable fraction of a second; run it off the event loop
+# so playback and other requests keep flowing during login and password changes.
+async def hash_password_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, stored_hash: str) -> bool:
+    return await asyncio.to_thread(verify_password, password, stored_hash)
+
+
 def create_csrf_token() -> str:
     nonce = secrets.token_urlsafe(24)
     signature = hmac.new(settings.secret_key.encode("utf-8"), nonce.encode("ascii"), hashlib.sha256).hexdigest()
@@ -147,6 +167,7 @@ def create_access_token(user: User) -> str:
     payload = {
         "sub": user.id,
         "email": user.email,
+        "ver": user.token_version or 0,
         "iat": now,
         "exp": now + settings.auth_cookie_max_age_seconds,
     }
@@ -239,7 +260,7 @@ async def set_initial_desktop_password(session: AsyncSession, password: str) -> 
     if user is None:
         user = User(
             email=normalize_email(settings.default_user_email),
-            hashed_password=hash_password(password),
+            hashed_password=await hash_password_async(password),
             is_active=True,
             is_verified=True,
             is_superuser=True,
@@ -248,7 +269,7 @@ async def set_initial_desktop_password(session: AsyncSession, password: str) -> 
         )
         session.add(user)
     else:
-        user.hashed_password = hash_password(password)
+        user.hashed_password = await hash_password_async(password)
         user.is_active = True
         user.is_verified = True
         user.is_superuser = True
@@ -273,19 +294,20 @@ async def change_desktop_password(
     new_password: str,
 ) -> None:
     """Change the local owner's password after verifying the existing one."""
-    if not verify_password(current_password, user.hashed_password):
+    if not await verify_password_async(current_password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
     if len(new_password) < 8:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 8 characters")
-    if verify_password(new_password, user.hashed_password):
+    if await verify_password_async(new_password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="New password must be different from the current password",
         )
 
-    user.hashed_password = hash_password(new_password)
+    user.hashed_password = await hash_password_async(new_password)
     user.failed_login_count = 0
     user.locked_until = None
+    user.token_version = (user.token_version or 0) + 1
     await session.commit()
     await session.refresh(user)
 
@@ -297,7 +319,7 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
         return None
     if is_user_locked(user):
         return None
-    if not verify_password(password, user.hashed_password):
+    if not await verify_password_async(password, user.hashed_password):
         user.failed_login_count += 1
         if user.failed_login_count >= settings.login_max_attempts:
             user.locked_until = utc_now() + timedelta(minutes=settings.login_lockout_minutes)
@@ -307,9 +329,18 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
 
     user.failed_login_count = 0
     user.locked_until = None
+    if password_needs_rehash(user.hashed_password):
+        # Upgrade hashes made with the old iteration count the first time the password is known.
+        user.hashed_password = await hash_password_async(password)
     await session.commit()
     await session.refresh(user)
     return user
+
+
+async def revoke_sessions(session: AsyncSession, user: User) -> None:
+    """Invalidate every issued session cookie for this user."""
+    user.token_version = (user.token_version or 0) + 1
+    await session.commit()
 
 
 async def get_optional_user(
@@ -327,6 +358,9 @@ async def get_optional_user(
     result = await session.execute(select(User).where(User.id == payload.get("sub")))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
+        return None
+    if payload.get("ver", 0) != (user.token_version or 0):
+        # Issued before a logout or password change.
         return None
     return user
 

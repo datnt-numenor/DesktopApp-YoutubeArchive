@@ -55,6 +55,8 @@ class User(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Embedded in session cookies; bumping it signs out every existing session.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     storage_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     playlist_quota: Mapped[int] = mapped_column(Integer, default=50, nullable=False)

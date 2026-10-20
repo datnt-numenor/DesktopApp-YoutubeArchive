@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +35,7 @@ from auth import (
     get_current_user,
     get_optional_user,
     require_csrf,
+    revoke_sessions,
     set_csrf_cookie,
     set_initial_desktop_password,
     set_login_cookie,
@@ -415,7 +416,15 @@ async def change_language(request: Request, _csrf: None = Depends(require_csrf))
 
 @app.post("/logout")
 @limiter.limit("30/minute")
-async def logout(request: Request, _csrf: None = Depends(require_csrf)) -> RedirectResponse:
+async def logout(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: User | None = Depends(get_optional_user),
+    _csrf: None = Depends(require_csrf),
+) -> RedirectResponse:
+    if current_user is not None:
+        # Clearing the cookie alone would leave a copied cookie valid for the rest of its 7 days.
+        await revoke_sessions(session, current_user)
     response = RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     clear_login_cookie(response)
     return response
@@ -618,12 +627,15 @@ async def open_storage_folder(
 @limiter.limit("10/hour")
 async def update_desktop_password(
     request: Request,
+    response: Response,
     payload: PasswordChangeRequest,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user),
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
+    # Changing the password signs out every other session; keep this window signed in.
     await change_desktop_password(session, current_user, payload.current_password, payload.new_password)
+    set_login_cookie(response, current_user)
     return BaseResponse(status="ok", message=tr("Password changed successfully"))
 
 
@@ -796,7 +808,7 @@ async def upload_custom_mp3(
     current_user: User = Depends(get_current_user),
     _csrf: None = Depends(require_csrf),
 ) -> BaseResponse:
-    await crud.get_custom_playlist_for_owner(session, playlist_id, current_user.id)
+    await crud.get_custom_playlist_for_owner(session, playlist_id, current_user.id, load_videos=False)
     await crud.recalculate_user_storage(session, current_user, settings.downloads_dir.parent)
     remaining_bytes = max(0, current_user.storage_quota_bytes - current_user.storage_used_bytes)
     if remaining_bytes == 0:
@@ -842,7 +854,7 @@ async def add_youtube_videos(
     current_user: User = Depends(get_current_user),
     _csrf: None = Depends(require_csrf),
 ) -> TaskResponse:
-    playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, current_user.id)
+    playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, current_user.id, load_videos=False)
     urls = list(dict.fromkeys(url.strip() for url in payload.urls if url.strip()))
     if not urls:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="At least one YouTube URL is required")
@@ -888,7 +900,7 @@ async def sync_playlist(
     current_user: User = Depends(get_current_user),
     _csrf: None = Depends(require_csrf),
 ) -> TaskResponse:
-    playlist = await crud.get_playlist_for_owner(session, playlist_id, current_user.id)
+    playlist = await crud.get_playlist_for_owner(session, playlist_id, current_user.id, load_videos=False)
     if playlist.source_type != PlaylistSource.YOUTUBE:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom playlists do not support sync")
     try:

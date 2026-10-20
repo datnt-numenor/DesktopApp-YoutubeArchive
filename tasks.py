@@ -433,7 +433,7 @@ async def import_custom_youtube_videos_by_id(
     task_id: str | None = None,
 ) -> None:
     async with AsyncSessionLocal() as session:
-        playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, owner_id)
+        playlist = await crud.get_custom_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
         owner = await session.get(User, owner_id)
         if not owner:
             raise ValueError(f"Owner {owner_id} does not exist")

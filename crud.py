@@ -164,21 +164,33 @@ async def find_orphaned_media_files(session: AsyncSession, data_dir: Path) -> li
     return sorted(orphans)
 
 
-async def get_playlist_for_owner(session: AsyncSession, playlist_id: int, owner_id: str) -> Playlist:
-    result = await session.execute(
-        select(Playlist)
-        .where(Playlist.id == playlist_id, Playlist.owner_id == owner_id)
-        .options(selectinload(Playlist.playlist_videos).selectinload(PlaylistVideo.video))
-        .execution_options(populate_existing=True)
-    )
+async def get_playlist_for_owner(
+    session: AsyncSession,
+    playlist_id: int,
+    owner_id: str,
+    *,
+    load_videos: bool = True,
+) -> Playlist:
+    """Return the owner's playlist; load_videos=False skips eager-loading every song when the
+    caller only needs ownership and the playlist's own columns."""
+    query = select(Playlist).where(Playlist.id == playlist_id, Playlist.owner_id == owner_id)
+    if load_videos:
+        query = query.options(selectinload(Playlist.playlist_videos).selectinload(PlaylistVideo.video))
+    result = await session.execute(query.execution_options(populate_existing=True))
     playlist = result.scalar_one_or_none()
     if not playlist:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Playlist does not belong to this user")
     return playlist
 
 
-async def get_custom_playlist_for_owner(session: AsyncSession, playlist_id: int, owner_id: str) -> Playlist:
-    playlist = await get_playlist_for_owner(session, playlist_id, owner_id)
+async def get_custom_playlist_for_owner(
+    session: AsyncSession,
+    playlist_id: int,
+    owner_id: str,
+    *,
+    load_videos: bool = True,
+) -> Playlist:
+    playlist = await get_playlist_for_owner(session, playlist_id, owner_id, load_videos=load_videos)
     if playlist.source_type != PlaylistSource.CUSTOM:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This action requires a custom playlist")
     return playlist
@@ -281,7 +293,7 @@ async def add_youtube_metadata_to_custom_playlist(
     owner_id: str,
     metadata: dict[str, Any],
 ) -> PlaylistVideo:
-    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner_id)
+    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
     video = await _get_video_by_youtube_id(session, metadata["yt_video_id"])
     if video is None:
         video = _new_video_from_metadata(metadata)
@@ -331,7 +343,7 @@ async def add_local_file_to_custom_playlist(
     file_size: int,
     count_storage: bool,
 ) -> PlaylistVideo:
-    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner.id)
+    playlist = await get_custom_playlist_for_owner(session, playlist_id, owner.id, load_videos=False)
     local_id = f"local_{digest[:56]}"
     video = await _get_video_by_youtube_id(session, local_id)
     if video is None:
@@ -713,7 +725,7 @@ async def delete_playlist(session: AsyncSession, playlist_id: int, owner_id: str
 
 
 async def set_playlist_auto_sync(session: AsyncSession, playlist_id: int, owner_id: str, auto_sync: bool) -> Playlist:
-    playlist = await get_playlist_for_owner(session, playlist_id, owner_id)
+    playlist = await get_playlist_for_owner(session, playlist_id, owner_id, load_videos=False)
     if playlist.source_type != PlaylistSource.YOUTUBE:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom playlists do not support auto-sync")
     playlist.auto_sync = auto_sync

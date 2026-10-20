@@ -95,6 +95,8 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0"))
             if "locked_until" not in user_columns:
                 await conn.execute(text("ALTER TABLE users ADD COLUMN locked_until DATETIME"))
+            if "token_version" not in user_columns:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
 
             # Before foreign keys were enforced, deleting a playlist left history rows pointing at
             # its id, which SQLite could later reuse for a new playlist. Detach those rows now.

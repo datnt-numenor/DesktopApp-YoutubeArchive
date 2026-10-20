@@ -311,9 +311,12 @@ def test_settings_offers_install_button_when_task_is_missing() -> None:
 
 async def test_update_desktop_password_endpoint_changes_real_password(session) -> None:
     owner = await auth.set_initial_desktop_password(session, "password123")
+    old_cookie = auth.create_access_token(owner)
+    http_response = app_module.Response()
 
     response = await update_desktop_password.__wrapped__(
         request=None,
+        response=http_response,
         payload=PasswordChangeRequest(current_password="password123", new_password="new-password123"),
         session=session,
         current_user=owner,
@@ -322,6 +325,10 @@ async def test_update_desktop_password_endpoint_changes_real_password(session) -
 
     assert response.status == "ok"
     assert await auth.authenticate_desktop_user(session, "new-password123") is not None
+    # Other sessions are signed out, but this window receives a fresh cookie.
+    assert auth.decode_access_token(old_cookie)["ver"] != owner.token_version
+    new_cookie = http_response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    assert auth.decode_access_token(new_cookie)["ver"] == owner.token_version
 
 
 def test_dashboard_renders_horizontal_layout(monkeypatch) -> None:
